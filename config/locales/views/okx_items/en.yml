@@ -1,0 +1,63 @@
+en:
+  settings:
+    providers:
+      taglines:
+        okx: Sync OKX Unified, Funding, Earn, staking and derivatives with a read-only API key.
+      okx_panel:
+        default_connection_name: OKX
+        add_connection: Add OKX connection
+        update_connection: Update connection
+        connection_name_label: Connection name
+        connection_name_placeholder: Main OKX
+        step1_html: 'Go to <a href="https://www.okx.com/account/my-api" target="_blank" rel="noopener noreferrer" class="underline">OKX API settings</a>'
+        step2: Create a production API key with Read permission only. Do not grant Trade or Withdraw.
+        step3: Copy the API key, secret key and passphrase below. Add the server IP to the key whitelist.
+        read_only_title: Read-only key required
+        read_only_body: Sure never needs Trade or Withdraw permissions. Use a separate production key restricted to Read and the server IP.
+        ip_hint_title: IP whitelisting required
+        ip_hint_body: Add the app server's egress IP to the OKX API key whitelist (OKX supports up to 20 IPs).
+        ip_hint_contact_admin: Contact your administrator to obtain the app server's egress IP address.
+        api_key_label: API key
+        api_secret_label: Secret key
+        passphrase_label: Passphrase
+        keep_secret_placeholder: Leave blank to keep the saved encrypted value
+        credentials_saved: All three credentials are saved and encrypted. Blank fields keep them unchanged.
+        setup_accounts: Import account
+        syncing: Syncing...
+        sync: Sync
+        disconnect: Disconnect
+        disconnect_confirm: Are you sure you want to disconnect %{name}?
+        sync_start_date_label: Import history from
+  okx_items:
+    create:
+      default_name: OKX
+      success: OKX connected. The first read-only sync has started.
+    update:
+      success: OKX connection updated.
+    destroy:
+      success: OKX connection scheduled for deletion.
+    complete_account_setup:
+      success:
+        one: Imported %{count} OKX account
+        other: Imported %{count} OKX accounts
+    setup_accounts:
+      title: Import OKX account
+      instructions: OKX products are combined into one account per API key to avoid double counting Unified, Funding, bots and Earn balances.
+      account_name_label: Account name
+      import_selected: Import selected
+      cancel: Cancel
+    okx_item:
+      sync_status:
+        no_accounts: No balance-bearing account found yet
+        all_synced:
+          one: "%{count} account synced"
+          other: "%{count} accounts synced"
+        partial_sync: "%{linked_count} synced, %{unlinked_count} need import"
+  okx_item:
+    syncer:
+      checking_credentials: Checking OKX credentials...
+      credentials_invalid: The OKX API key, secret or passphrase is missing or invalid.
+      importing_accounts: Importing all supported OKX products...
+      accounts_need_setup:
+        one: "%{count} account is ready to import"
+        other: "%{count} accounts are ready to import"

@@ -200,6 +200,7 @@ class Settings::ProvidersController < ApplicationController
       { key: "brex",           title: "Brex",            turbo_id: "brex",           partial: "brex_panel" },
       { key: "coinbase",       title: "Coinbase",        turbo_id: "coinbase",       partial: "coinbase_panel" },
       { key: "binance",        title: "Binance",         turbo_id: "binance",        partial: "binance_panel" },
+      { key: "okx",            title: "OKX",             turbo_id: "okx",            partial: "okx_panel" },
       { key: "kraken",         title: "Kraken",          turbo_id: "kraken",         partial: "kraken_panel" },
       { key: "onchain_wallet", title: "On-chain wallets", turbo_id: "onchain_wallet", partial: "onchain_wallet_panel" },
       { key: "snaptrade",      title: "SnapTrade",       turbo_id: "snaptrade",      partial: "snaptrade_panel", auto_open: "manage" },
@@ -226,6 +227,7 @@ class Settings::ProvidersController < ApplicationController
       "brex"           => "BrexItem",
       "coinbase"       => "CoinbaseItem",
       "binance"        => "BinanceItem",
+      "okx"            => "OkxItem",
       "kraken"         => "KrakenItem",
       "onchain_wallet" => "OnchainWalletItem",
       "snaptrade"      => "SnaptradeItem",
@@ -262,6 +264,8 @@ class Settings::ProvidersController < ApplicationController
         @coinbase_items = Current.family.coinbase_items.ordered
       when "binance"
         @binance_items = Current.family.binance_items.active.ordered
+      when "okx"
+        @okx_items = Current.family.okx_items.active.ordered
       when "kraken"
         @kraken_items = Current.family.kraken_items.active.ordered
       when "onchain_wallet"
@@ -308,6 +312,7 @@ class Settings::ProvidersController < ApplicationController
       @trading212_items = Current.family.trading212_items.ordered.select(:id)
       @indexa_capital_items = Current.family.indexa_capital_items.ordered.select(:id)
       @binance_items = Current.family.binance_items.active.ordered
+      @okx_items = Current.family.okx_items.active.ordered
       @kraken_items = Current.family.kraken_items.active.ordered
       @onchain_wallet_items = Current.family.onchain_wallet_items.active.ordered
       @questrade_items = Current.family.questrade_items.active.ordered.select(:id)
@@ -340,6 +345,7 @@ class Settings::ProvidersController < ApplicationController
         "brex"           => @brex_items,
         "coinbase"       => @coinbase_items,
         "binance"        => @binance_items,
+        "okx"            => @okx_items,
         "kraken"         => @kraken_items,
         "onchain_wallet" => @onchain_wallet_items,
         "snaptrade"      => @snaptrade_items,

@@ -31,6 +31,12 @@ sync_binance:
   queue: "scheduled"
   description: "Syncs every active Binance connection through the native read-only provider"
 
+sync_okx:
+  cron: "47 */4 * * *" # every four hours, separated from Binance and top-of-hour jobs
+  class: "SyncOkxJob"
+  queue: "scheduled"
+  description: "Syncs every active OKX connection through the native read-only provider"
+
 sync_property_valuations:
   cron: "30 1 1 * *" # monthly on the 1st at 1:30 AM
   class: "SyncPropertyValuationsJob"

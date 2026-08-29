@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_29_090000) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_29_104500) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pgcrypto"
@@ -1515,6 +1515,45 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_29_090000) do
     t.index ["user_id"], name: "index_oidc_identities_on_user_id"
   end
 
+  create_table "okx_accounts", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.string "account_type", null: false
+    t.datetime "created_at", null: false
+    t.string "currency", null: false
+    t.decimal "current_balance", precision: 19, scale: 4
+    t.jsonb "extra", default: {}, null: false
+    t.jsonb "institution_metadata"
+    t.string "name", null: false
+    t.uuid "okx_item_id", null: false
+    t.jsonb "raw_payload"
+    t.jsonb "raw_transactions_payload"
+    t.datetime "updated_at", null: false
+    t.index ["account_type"], name: "index_okx_accounts_on_account_type"
+    t.index ["okx_item_id", "account_type"], name: "index_okx_accounts_on_item_and_type", unique: true
+    t.index ["okx_item_id"], name: "index_okx_accounts_on_okx_item_id"
+  end
+
+  create_table "okx_items", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.text "api_key", null: false
+    t.text "api_secret", null: false
+    t.datetime "created_at", null: false
+    t.uuid "family_id", null: false
+    t.string "institution_color"
+    t.string "institution_domain"
+    t.string "institution_name"
+    t.string "institution_url"
+    t.string "name", null: false
+    t.text "passphrase", null: false
+    t.boolean "pending_account_setup", default: false, null: false
+    t.jsonb "raw_payload"
+    t.boolean "scheduled_for_deletion", default: false, null: false
+    t.string "status", default: "good", null: false
+    t.date "sync_start_date"
+    t.datetime "updated_at", null: false
+    t.index ["family_id", "api_key"], name: "idx_okx_items_unique_active_api_key_by_family", unique: true, where: "(scheduled_for_deletion = false)"
+    t.index ["family_id"], name: "index_okx_items_on_family_id"
+    t.index ["status"], name: "index_okx_items_on_status"
+  end
+
   create_table "onchain_wallet_accounts", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.string "asset_kind", null: false
     t.string "chain", null: false
@@ -2518,6 +2557,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_29_090000) do
   add_foreign_key "oauth_access_grants", "oauth_applications", column: "application_id"
   add_foreign_key "oauth_access_tokens", "oauth_applications", column: "application_id"
   add_foreign_key "oidc_identities", "users"
+  add_foreign_key "okx_accounts", "okx_items"
+  add_foreign_key "okx_items", "families"
   add_foreign_key "onchain_wallet_accounts", "onchain_wallet_items"
   add_foreign_key "onchain_wallet_items", "families"
   add_foreign_key "plaid_accounts", "plaid_items"

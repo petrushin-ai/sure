@@ -112,6 +112,14 @@ Rails.application.routes.draw do
     end
   end
 
+  resources :okx_items, only: [ :create, :update, :destroy ] do
+    member do
+      post :sync
+      get :setup_accounts
+      post :complete_account_setup
+    end
+  end
+
   resources :kraken_items, only: [ :create, :update, :destroy ] do
     collection do
       get :select_accounts

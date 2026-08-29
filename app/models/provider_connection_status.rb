@@ -10,6 +10,7 @@ class ProviderConnectionStatus
     { key: "enable_banking", type: "EnableBankingItem", association: :enable_banking_items, accounts: :enable_banking_accounts },
     { key: "coinbase", type: "CoinbaseItem", association: :coinbase_items, accounts: :coinbase_accounts },
     { key: "binance", type: "BinanceItem", association: :binance_items, accounts: :binance_accounts },
+    { key: "okx", type: "OkxItem", association: :okx_items, accounts: :okx_accounts },
     { key: "kraken", type: "KrakenItem", association: :kraken_items, accounts: :kraken_accounts },
     { key: "onchain_wallet", type: "OnchainWalletItem", association: :onchain_wallet_items, accounts: :onchain_wallet_accounts },
     { key: "coinstats", type: "CoinstatsItem", association: :coinstats_items, accounts: :coinstats_accounts },

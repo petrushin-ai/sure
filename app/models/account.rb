@@ -328,6 +328,12 @@ class Account < ApplicationRecord
       account
     end
 
+    def create_from_okx_account(okx_account)
+      account = create_from_crypto_exchange_account(okx_account, family: okx_account.okx_item.family)
+      account.set_opening_anchor_balance(balance: 0)
+      account
+    end
+
     def create_from_ibkr_account(ibkr_account)
       family = ibkr_account.ibkr_item.family
       default_name = if ibkr_account.ibkr_account_id.present?

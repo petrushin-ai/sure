@@ -159,6 +159,30 @@ image publish. A stale or non-applicable patch is a hard failure.
   identity for provider imports and cannot substitute a quote-currency market
   pair for a bare Binance asset.
 
+### SURE-010 — Native comprehensive OKX connector
+
+- Source: direct owner request in `#devops`, 2026-08-29.
+- Status: active downstream product integration.
+- Files: `app/models/provider/okx.rb`, `app/models/okx_item*`,
+  `app/models/okx_account*`, `app/controllers/okx_items_controller.rb`,
+  `app/jobs/sync_okx*`, provider settings UI/locales, database migration, tests,
+  and [`docs/hosting/okx.md`](hosting/okx.md).
+- Purpose: connect multiple named OKX main/sub-accounts directly with encrypted
+  read-only key/secret/passphrase credentials; import non-overlapping Unified,
+  Funding, Earn/Staking, OKUSD and loan value into one combined account per key;
+  retain all official product ledgers and diagnostics without double counting
+  account-wide staking, bots, copy trading or Stable Rewards aggregates; apply
+  the strict `< $1` holding cutoff; preserve last-good source snapshots on
+  partial failures; and run an isolated staggered four-hour native sync.
+- Main conflict areas: family provider panels, `Account` crypto factory,
+  `config/routes.rb`, `config/schedule.yml`, provider metadata, database schema,
+  crypto security resolution and provider-sync health aggregation.
+- Retirement rule: remove only after upstream ships an OKX v5 connector with
+  equivalent three-part signing and clock correction, multiple connections,
+  comprehensive product coverage, aggregate-aware no-double-count semantics,
+  exact crypto identity, `$1` boundary behavior, partial-source carryover,
+  history retention diagnostics and isolated scheduled sync.
+
 If upstream absorbs a patch, record the upstream PR and commit here, compare
 behavior and tests, remove only the duplicated downstream implementation, and
 regenerate the patch. Do not silently delete a ledger entry.
@@ -248,6 +272,12 @@ bin/rails test \
   test/models/binance_item \
   test/models/binance_account \
   test/jobs/sync_binance_job_test.rb
+bin/rails test \
+  test/models/provider/okx_test.rb \
+  test/models/okx_item_test.rb \
+  test/models/okx_item/importer_test.rb \
+  test/controllers/okx_items_controller_test.rb \
+  test/jobs/sync_okx_job_test.rb
 bin/rails test:system TEST=test/system/admin/system_health_test.rb
 bin/rubocop \
   app/models/ai_health.rb \

@@ -1,0 +1,69 @@
+ru:
+  settings:
+    providers:
+      taglines:
+        okx: Синхронизация OKX Unified, Funding, Earn, стейкинга и деривативов по API-ключу только для чтения.
+      okx_panel:
+        default_connection_name: OKX
+        add_connection: Добавить подключение OKX
+        update_connection: Обновить подключение
+        connection_name_label: Название подключения
+        connection_name_placeholder: Основной OKX
+        step1_html: 'Перейдите в <a href="https://www.okx.com/account/my-api" target="_blank" rel="noopener noreferrer" class="underline">настройки API OKX</a>'
+        step2: Создайте production API-ключ только с разрешением Read. Не включайте Trade и Withdraw.
+        step3: Вставьте API key, secret key и passphrase. Добавьте IP сервера в whitelist ключа.
+        read_only_title: Нужен ключ только для чтения
+        read_only_body: Sure не нужны разрешения Trade и Withdraw. Используйте отдельный production-ключ с доступом Read и ограничением по IP сервера.
+        ip_hint_title: Ограничение по IP обязательно
+        ip_hint_body: Добавьте исходящий IP приложения в whitelist API-ключа OKX (OKX поддерживает до 20 IP-адресов).
+        ip_hint_contact_admin: Обратитесь к администратору за исходящим IP сервера.
+        api_key_label: API key
+        api_secret_label: Secret key
+        passphrase_label: Passphrase
+        keep_secret_placeholder: Оставьте пустым, чтобы сохранить зашифрованное значение
+        credentials_saved: Все три значения сохранены и зашифрованы. Пустые поля их не изменяют.
+        setup_accounts: Импортировать счёт
+        syncing: Синхронизация...
+        sync: Синхронизировать
+        disconnect: Отключить
+        disconnect_confirm: Отключить %{name}?
+        sync_start_date_label: Импортировать историю с даты
+  okx_items:
+    create:
+      default_name: OKX
+      success: OKX подключён. Первая синхронизация только для чтения запущена.
+    update:
+      success: Подключение OKX обновлено.
+    destroy:
+      success: Подключение OKX запланировано на удаление.
+    complete_account_setup:
+      success:
+        one: Импортирован %{count} счёт OKX
+        few: Импортированы %{count} счёта OKX
+        many: Импортировано %{count} счетов OKX
+        other: Импортировано %{count} счёта OKX
+    setup_accounts:
+      title: Импорт счёта OKX
+      instructions: Продукты OKX объединены в один счёт на каждый API-ключ, чтобы не учитывать повторно Unified, Funding, bots и Earn.
+      account_name_label: Название счёта
+      import_selected: Импортировать
+      cancel: Отмена
+    okx_item:
+      sync_status:
+        no_accounts: Счёт с балансом пока не найден
+        all_synced:
+          one: Синхронизирован %{count} счёт
+          few: Синхронизированы %{count} счёта
+          many: Синхронизировано %{count} счетов
+          other: Синхронизировано %{count} счёта
+        partial_sync: "%{linked_count} синхронизировано, %{unlinked_count} требуют импорта"
+  okx_item:
+    syncer:
+      checking_credentials: Проверка учётных данных OKX...
+      credentials_invalid: API key, secret key или passphrase OKX отсутствует либо недействителен.
+      importing_accounts: Импорт всех поддерживаемых продуктов OKX...
+      accounts_need_setup:
+        one: "%{count} счёт готов к импорту"
+        few: "%{count} счёта готовы к импорту"
+        many: "%{count} счетов готовы к импорту"
+        other: "%{count} счёта готовы к импорту"
