@@ -97,7 +97,60 @@ class Provider::Openai::PdfProcessorTest < ActiveSupport::TestCase
     assert_equal expected, processor.process
   end
 
+  test "vision mode uses max_completion_tokens with OpenAI" do
+    client = mock("openai_client")
+    client.expects(:chat).with do |request|
+      parameters = request[:parameters]
+      parameters[:max_completion_tokens] == 512 && !parameters.key?(:max_tokens)
+    end.returns(pdf_response)
+
+    processor = vision_processor(client)
+    processor.stubs(:convert_pdf_to_images).returns([ "encoded-page" ])
+
+    assert_equal "Synthetic PDF", processor.process.summary
+  end
+
+  test "vision mode keeps max_tokens for custom OpenAI-compatible providers" do
+    client = mock("openai_client")
+    client.expects(:chat).with do |request|
+      parameters = request[:parameters]
+      parameters[:max_tokens] == 512 && !parameters.key?(:max_completion_tokens)
+    end.returns(pdf_response)
+
+    processor = vision_processor(client, custom_provider: true)
+    processor.stubs(:convert_pdf_to_images).returns([ "encoded-page" ])
+
+    assert_equal "Synthetic PDF", processor.process.summary
+  end
+
   private
+    def vision_processor(client, custom_provider: false)
+      Provider::Openai::PdfProcessor.new(
+        client,
+        model: "gpt-5.6-terra",
+        pdf_content: @pdf_content,
+        custom_provider: custom_provider,
+        max_response_tokens: 512,
+        processing_mode: :vision
+      )
+    end
+
+    def pdf_response
+      {
+        "choices" => [
+          {
+            "message" => {
+              "content" => {
+                document_type: "other",
+                summary: "Synthetic PDF",
+                extracted_data: {}
+              }.to_json
+            }
+          }
+        ]
+      }
+    end
+
     def build_processor(error, trace)
       client = mock
       client.expects(:chat).raises(error)
