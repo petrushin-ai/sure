@@ -56,11 +56,6 @@ en:
       continue: Continue
       read_only_note: Only public chain data is read. Never enter a seed phrase or private key.
       subtitle: Track a wallet you hold the keys to, from its public address.
-      ton_connect: Connect TON wallet
-      ton_connect_body: Choose Tonkeeper or another TON Connect wallet. Sure copies its mainnet address, closes the dApp session, and continues read-only.
-      ton_connect_connected: TON wallet connected. Reading its public address…
-      ton_connect_error: TON Connect could not connect this wallet. Try again or paste its public address.
-      ton_connect_mainnet_only: Only a TON mainnet wallet can be tracked here.
       title: Add a self-custody wallet
     onchain_wallet_item:
       assets_tracked:

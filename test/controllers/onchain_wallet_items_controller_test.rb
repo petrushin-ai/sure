@@ -25,9 +25,7 @@ class OnchainWalletItemsControllerTest < ActionDispatch::IntegrationTest
     # reading a settings page for the third time.
     assert_match I18n.t("settings.providers.onchain_wallet_panel.keyless_title"), response.body
     assert_match I18n.t("onchain_wallet_items.new_wallet.read_only_note"), response.body
-    assert_select "[data-controller='ton-connect']"
-    assert_select "button[data-action='ton-connect#connectWallet']"
-    assert_match tonconnect_manifest_url, response.body
+    assert_no_match(/ton.?connect/i, response.body)
   end
 
   test "the settings panel renders before anything is linked" do

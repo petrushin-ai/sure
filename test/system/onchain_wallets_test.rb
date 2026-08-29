@@ -62,7 +62,7 @@ class OnchainWalletsTest < ApplicationSystemTestCase
     # The linking modal opens on top of the drawer.
     assert_text I18n.t("onchain_wallet_items.new_wallet.title")
     assert_text I18n.t("onchain_wallet_items.new_wallet.bitcoin_single_address_note")
-    assert_button I18n.t("onchain_wallet_items.new_wallet.ton_connect")
+    assert_no_button "Connect TON wallet"
 
     fill_in I18n.t("onchain_wallet_items.new_wallet.address_label"), with: OnchainTestHelper::FAKE_ADDRESS
     click_on I18n.t("onchain_wallet_items.new_wallet.continue")
@@ -83,35 +83,6 @@ class OnchainWalletsTest < ApplicationSystemTestCase
     end
 
     assert_equal %w[FAKE USDC], OnchainWalletAccount.order(:symbol).pluck(:symbol)
-  end
-
-  test "TON Connect opens from the click without waiting for session restoration" do
-    visit settings_providers_path
-    open_onchain_panel
-    click_on I18n.t("settings.providers.onchain_wallet_panel.add_wallet")
-    assert_button I18n.t("onchain_wallet_items.new_wallet.ton_connect")
-
-    page.execute_script <<~JS
-      const button = [...document.querySelectorAll('button[data-action="ton-connect#connectWallet"]')]
-        .find((candidate) => candidate.offsetParent !== null)
-      const element = button.closest('[data-controller~="ton-connect"]')
-      const controller = window.Stimulus.getControllerForElementAndIdentifier(element, "ton-connect")
-      window.tonConnectModalOpened = false
-      controller.tonConnectUi = {
-        // A restored connection that never settles reproduced the production
-        // dead button. The picker must not depend on this promise at all.
-        connectionRestored: new Promise(() => {}),
-        connected: false,
-        openModal: () => {
-          window.tonConnectModalOpened = true
-          return Promise.resolve()
-        },
-      }
-    JS
-
-    click_on I18n.t("onchain_wallet_items.new_wallet.ton_connect")
-
-    assert page.evaluate_script("window.tonConnectModalOpened")
   end
 
   test "managing a wallet reviews its tokens and disconnects one asset" do

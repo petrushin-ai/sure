@@ -50,8 +50,8 @@ module Onchain::TonAddress
 
         tag = body.getbyte(0)
         # A testnet-only user-friendly spelling must never be silently treated
-        # as mainnet. Raw addresses carry no network bit; TonConnect separately
-        # supplies and validates its mainnet chain id.
+        # as mainnet. Raw addresses carry no network bit, so this check applies
+        # only to the encoded user-friendly form.
         return nil unless (tag & TESTNET_FLAG).zero?
         return nil unless [ BOUNCEABLE_TAG, NON_BOUNCEABLE_TAG ].include?(tag)
 

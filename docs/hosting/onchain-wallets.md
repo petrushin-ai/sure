@@ -2,9 +2,7 @@
 
 Sure can track wallets you hold the keys to — Bitcoin, six EVM networks, Solana
 and TON — from their **public addresses only**. Nothing is signed, no key or seed
-phrase is ever entered, and no API key is required for any chain. TON users can
-select an address through TonConnect instead of copying it by hand; Sure still
-stores only the public address.
+phrase is ever entered, and no API key is required for any chain.
 
 This document covers where the data comes from, what needs configuring, the
 limits you will hit, and how to diagnose a wallet that looks wrong.
@@ -176,9 +174,8 @@ whole flow; you can still pick it by hand.
 
 **Settings → Providers → On-chain wallets → Add wallet.**
 
-1. Paste the public address. For TON, click **Connect TON wallet** to choose it
-   in Tonkeeper or another TonConnect-compatible wallet. Leave the network on
-   "Detect automatically" unless you know which one you want.
+1. Paste the public address. Leave the network on "Detect automatically" unless
+   you know which one you want.
 2. If the address format belongs to several networks — every `0x` address is
    valid on all six EVM networks, and Bitcoin's Base58 shape overlaps Solana's —
    Sure probes each and asks you to choose, marking the ones where it found
@@ -193,19 +190,6 @@ whole flow; you can still pick it by hand.
    value of zero.
 
 Nothing is imported that you did not tick.
-
-### What TonConnect is allowed to do
-
-TonConnect is a one-time onboarding channel, not an ongoing custody or signing
-integration. Sure requests no `ton_proof`, signature or transaction, rejects a
-testnet account, takes the mainnet public address and immediately disconnects the
-dApp session before submitting the normal read-only form. Sure disables
-TonConnect session restoration entirely: the picker opens directly from the
-user's click, a stalled bridge cannot leave the button waiting indefinitely,
-and a previous Sure login on a shared browser cannot silently supply its wallet.
-
-The manifest is public at `/tonconnect-manifest.json`, as TonConnect requires.
-It contains only the Sure origin, product name and public icon.
 
 ## Managing a wallet
 
@@ -331,9 +315,9 @@ TON Center key, narrow the sync start date, or use `TONCENTER_URL` with your own
 indexer. Current balances remain authoritative and the wallet is marked as
 having incomplete history.
 
-**A TON wallet is rejected after TonConnect.** Sure accepts mainnet (`-239`)
-only. Switch the wallet to mainnet and reconnect; testnet (`-3`) is deliberately
-not imported into a personal-finance account.
+**A TON address is rejected.** Sure accepts mainnet user-friendly addresses
+only. Switch the wallet to mainnet and copy its public address again; testnet
+addresses are deliberately not imported into a personal-finance account.
 
 **Solana times out entirely on a very large wallet.** `getTokenAccountsByOwner`
 returns every token account in one response, and the public endpoint struggles

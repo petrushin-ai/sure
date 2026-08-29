@@ -2,8 +2,6 @@ require "sidekiq/web"
 require "sidekiq/cron/web"
 
 Rails.application.routes.draw do
-  get "tonconnect-manifest.json", to: "tonconnect_manifest#show", as: :tonconnect_manifest
-
   resources :questrade_items, only: [ :index, :new, :create, :show, :edit, :update, :destroy ] do
     collection do
       get :preload_accounts
