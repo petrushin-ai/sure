@@ -15,6 +15,8 @@ class BinanceItem::SpotImporter
     raw = provider.get_spot_account
     assets = parse_assets(raw["balances"] || [])
     { assets: assets, raw: raw, source: "spot" }
+  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
+    raise
   rescue => e
     Rails.logger.error "BinanceItem::SpotImporter #{binance_item.id} - #{e.message}"
     { assets: [], raw: nil, source: "spot", error: e.message }

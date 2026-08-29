@@ -73,7 +73,7 @@ class BinanceAccount::HoldingsProcessor
       symbol = asset["symbol"] || asset[:symbol]
       source = asset["source"] || asset[:source]
       return if symbol.blank?
-      return if (asset["total"] || asset[:total]).to_d.zero?
+      return unless (asset["total"] || asset[:total]).to_d.positive?
 
       holding_external_id(symbol, source)
     end
@@ -89,16 +89,20 @@ class BinanceAccount::HoldingsProcessor
       total  = (asset["total"] || asset[:total]).to_d
       source = asset["source"] || asset[:source]
 
-      return if total.zero?
+      # Margin liabilities are reflected in the account's net balance. Sure's
+      # Holding model intentionally rejects negative quantities, so only the
+      # positive asset side is materialized as a holding.
+      return unless total.positive?
 
       ticker   = symbol.include?(":") ? symbol : "CRYPTO:#{symbol}"
       security = resolve_security(ticker, symbol)
       return unless security
 
-      price_usd = fetch_price(symbol)
+      price_usd = stored_usd_price(asset) || fetch_price(symbol)
       return if price_usd.nil?
 
       amount_usd = total * price_usd
+      return if amount_usd < BinanceItem::Importer::MIN_HOLDING_USD
 
       # Stale rate metadata is intentionally discarded here — it is captured and
       # surfaced at the account level by BinanceAccount::Processor#process_account!.
@@ -147,5 +151,10 @@ class BinanceAccount::HoldingsProcessor
 
       Rails.logger.warn "BinanceAccount::HoldingsProcessor - no price found for #{symbol} across all quote pairs; skipping holding"
       nil
+    end
+
+    def stored_usd_price(asset)
+      value = asset["usd_price"] || asset[:usd_price]
+      value.present? ? value.to_d : nil
     end
 end

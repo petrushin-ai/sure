@@ -3,7 +3,7 @@
 class BinanceAccount < ApplicationRecord
   include CurrencyNormalizable, Encryptable
 
-  STABLECOINS = %w[USDT BUSD FDUSD TUSD USDC DAI].freeze
+  STABLECOINS = %w[USDT BUSD FDUSD TUSD USDC DAI BFUSD RWUSD].freeze
 
   if encryption_ready?
     encrypts :raw_payload

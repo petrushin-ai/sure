@@ -38,6 +38,66 @@ class Provider::BinanceTest < ActiveSupport::TestCase
     end
   end
 
+  test "handle_response raises RateLimitError on an IP ban" do
+    response = mock_httparty_response(418, {})
+    assert_raises(Provider::Binance::RateLimitError) do
+      @provider.send(:handle_response, response)
+    end
+  end
+
+  test "spot pricing propagates rate limiting" do
+    response = mock_httparty_response(429, {})
+    Provider::Binance.stubs(:get).returns(response)
+
+    assert_raises(Provider::Binance::RateLimitError) do
+      @provider.get_spot_price("BTCUSDT")
+    end
+  end
+
+  test "paginates all flexible Earn positions" do
+    first_page = { "rows" => Array.new(100) { |i| { "asset" => "A#{i}" } }, "total" => 101 }
+    second_page = { "rows" => [ { "asset" => "LAST" } ], "total" => 101 }
+
+    @provider.expects(:signed_get).with(
+      "/sapi/v1/simple-earn/flexible/position",
+      extra_params: { "current" => "1", "size" => "100" }
+    ).returns(first_page)
+    @provider.expects(:signed_get).with(
+      "/sapi/v1/simple-earn/flexible/position",
+      extra_params: { "current" => "2", "size" => "100" }
+    ).returns(second_page)
+
+    result = @provider.get_simple_earn_flexible
+
+    assert_equal 101, result["rows"].size
+    assert_equal 2, result["pages"]
+  end
+
+  test "funding wallet uses Binance read-only POST query" do
+    @provider.expects(:signed_post).with(
+      "/sapi/v1/asset/get-funding-asset",
+      extra_params: { "needBtcValuation" => "false" }
+    ).returns([])
+
+    assert_equal [], @provider.get_funding_wallet
+  end
+
+  test "uses the correct hosts for derivative account types" do
+    @provider.expects(:signed_get).with(
+      "/dapi/v1/account", base_url: Provider::Binance::COIN_FUTURES_BASE_URL
+    ).returns({})
+    @provider.expects(:signed_get).with(
+      "/eapi/v1/account", base_url: Provider::Binance::OPTIONS_BASE_URL
+    ).returns({})
+    @provider.expects(:signed_get).with(
+      "/papi/v1/balance", base_url: Provider::Binance::PORTFOLIO_MARGIN_BASE_URL
+    ).returns([])
+
+    @provider.get_coin_futures_account
+    @provider.get_options_account
+    @provider.get_portfolio_margin_balance
+  end
+
   test "handle_response raises ApiError on other non-2xx" do
     response = mock_httparty_response(403, { "msg" => "WAF Limit" })
     assert_raises(Provider::Binance::ApiError) do

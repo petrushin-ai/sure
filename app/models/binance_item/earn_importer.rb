@@ -42,6 +42,8 @@ class BinanceItem::EarnImporter
       raw: { "flexible" => flexible_raw, "locked" => locked_raw },
       source: "earn"
     }
+  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
+    raise
   rescue => e
     Rails.logger.error "BinanceItem::EarnImporter #{binance_item.id} - #{e.message}"
     { assets: [], raw: nil, source: "earn", error: e.message }
@@ -51,6 +53,8 @@ class BinanceItem::EarnImporter
 
     def fetch_flexible
       provider.get_simple_earn_flexible
+    rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
+      raise
     rescue => e
       @errors["flexible"] = e.message
       Rails.logger.warn "BinanceItem::EarnImporter #{binance_item.id} - flexible failed: #{e.message}"
@@ -59,6 +63,8 @@ class BinanceItem::EarnImporter
 
     def fetch_locked
       provider.get_simple_earn_locked
+    rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
+      raise
     rescue => e
       @errors["locked"] = e.message
       Rails.logger.warn "BinanceItem::EarnImporter #{binance_item.id} - locked failed: #{e.message}"

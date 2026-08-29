@@ -425,7 +425,7 @@ en:
         mercury: Sync your Mercury business banking accounts automatically.
         brex: Sync Brex cash and corporate card activity with read-only access.
         coinbase: Import your Coinbase crypto holdings and track performance.
-        binance: Sync your Binance spot balances using a read-only API key.
+        binance: Sync all supported Binance account balances using a read-only API key.
         kraken: Sync Kraken balances and spot trade fills using a read-only API key.
         onchain_wallet: Track self-custody Bitcoin, EVM and Solana wallets from their public addresses.
         snaptrade: Connect brokerage accounts via the SnapTrade aggregation network.

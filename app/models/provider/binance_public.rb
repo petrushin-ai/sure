@@ -39,7 +39,7 @@ class Provider::BinancePublic < Provider
   # the few stablecoin/USDT pairs that do exist (USDCUSDT, etc.) hover at ~1.0
   # with sub-cent noise — synthesizing a flat 1.0 USD price is both accurate
   # enough and avoids surfacing transient depeg ticks from market data.
-  USD_STABLECOINS = %w[USDT USDC BUSD DAI FDUSD TUSD USDP PYUSD].freeze
+  USD_STABLECOINS = %w[USDT USDC BUSD DAI FDUSD TUSD USDP PYUSD BFUSD RWUSD].freeze
 
   # Trailing separator between base and quote in a stored pair ticker
   # ("BTC-USD", "BTC/USD", "BTC_USD"), stripped so parse_ticker builds a valid
