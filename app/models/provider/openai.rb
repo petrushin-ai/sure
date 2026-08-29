@@ -274,7 +274,8 @@ class Provider::Openai < Provider
       result = BankStatementExtractor.new(
         client: client,
         pdf_content: pdf_content,
-        model: effective_model
+        model: effective_model,
+        custom_provider: custom_provider?
       ).extract
 
       upsert_langfuse_trace(trace: trace, output: { transaction_count: result[:transactions].size })

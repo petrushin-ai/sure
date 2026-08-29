@@ -38,6 +38,9 @@ class Provider::Anthropic::BankStatementExtractor
     )
 
     parsed = extract_tool_input(response)
+    unless Provider::LlmConcept.valid_bank_statement_extraction_payload?(parsed)
+      raise Provider::Anthropic::Error, "Bank statement response did not match the required schema"
+    end
     result = build_result(parsed)
 
     truncated = stop_reason(response) == :max_tokens
@@ -89,43 +92,7 @@ class Provider::Anthropic::BankStatementExtractor
       {
         name: TOOL_NAME,
         description: "Return the full set of transactions and statement metadata extracted from the PDF.",
-        input_schema: {
-          type: "object",
-          properties: {
-            bank_name: { type: [ "string", "null" ] },
-            account_holder: { type: [ "string", "null" ] },
-            account_number: { type: [ "string", "null" ], description: "Typically last 4 digits only." },
-            statement_period: {
-              type: "object",
-              properties: {
-                start_date: { type: [ "string", "null" ], description: "YYYY-MM-DD" },
-                end_date: { type: [ "string", "null" ], description: "YYYY-MM-DD" }
-              },
-              required: [],
-              additionalProperties: false
-            },
-            opening_balance: { type: [ "number", "null" ] },
-            closing_balance: { type: [ "number", "null" ] },
-            transactions: {
-              type: "array",
-              description: "Every transaction in the statement, in document order.",
-              items: {
-                type: "object",
-                properties: {
-                  date: { type: "string", description: "YYYY-MM-DD" },
-                  description: { type: "string" },
-                  amount: { type: "number", description: "Negative for debits / expenses, positive for credits / deposits." },
-                  reference: { type: [ "string", "null" ] },
-                  category: { type: [ "string", "null" ] }
-                },
-                required: [ "date", "description", "amount" ],
-                additionalProperties: false
-              }
-            }
-          },
-          required: [ "transactions" ],
-          additionalProperties: false
-        }
+        input_schema: Provider::LlmConcept.bank_statement_json_schema
       }
     end
 
@@ -135,8 +102,10 @@ class Provider::Anthropic::BankStatementExtractor
 
         Rules:
           - Extract EVERY transaction in document order
+          - Preserve each transaction description exactly as printed
           - Negative amounts for debits / expenses, positive for credits / deposits
           - Dates in YYYY-MM-DD
+          - Extract reference and category only when clearly visible
           - Use null for any field you cannot read; do not invent values
       INSTRUCTIONS
     end

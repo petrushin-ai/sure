@@ -19,8 +19,8 @@ class Provider::Anthropic::BankStatementExtractorTest < ActiveSupport::TestCase
           "opening_balance" => 1000.0,
           "closing_balance" => 1500.0,
           "transactions" => [
-            { "date" => "2026-03-05", "description" => "Coffee", "amount" => -4.5 },
-            { "date" => "2026-03-15", "description" => "Salary", "amount" => 3000.0, "reference" => "Payroll Mar" }
+            { "date" => "2026-03-05", "description" => "Coffee", "amount" => -4.5, "reference" => nil, "category" => nil },
+            { "date" => "2026-03-15", "description" => "Salary", "amount" => 3000.0, "reference" => "Payroll Mar", "category" => nil }
           ]
         }
       )
@@ -99,7 +99,11 @@ class Provider::Anthropic::BankStatementExtractorTest < ActiveSupport::TestCase
         tool_use_block(
           id: "toolu_1",
           name: "report_bank_statement",
-          input: { "transactions" => [ { "date" => "2026-03-05", "description" => "Coffee", "amount" => -4.5 } ] }
+          input: valid_payload(
+            transactions: [
+              { "date" => "2026-03-05", "description" => "Coffee", "amount" => -4.5, "reference" => nil, "category" => nil }
+            ]
+          )
         )
       ]
     )
@@ -115,6 +119,39 @@ class Provider::Anthropic::BankStatementExtractorTest < ActiveSupport::TestCase
     ).extract
 
     assert_equal true, result[:truncated]
+  end
+
+  test "uses the canonical Sure schema for the Anthropic tool" do
+    response = build_response(content: [
+      tool_use_block(id: "toolu_1", name: "report_bank_statement", input: valid_payload)
+    ])
+    messages = mock("messages")
+    messages.expects(:create).with do |params|
+      params.dig(:tools, 0, :input_schema) == Provider::LlmConcept.bank_statement_json_schema
+    end.returns(response)
+    client = stub(messages: messages)
+
+    Provider::Anthropic::BankStatementExtractor.new(
+      client: client,
+      model: "claude-sonnet-4-6",
+      pdf_content: @pdf_content
+    ).extract
+  end
+
+  test "raises when the tool payload does not match the required schema" do
+    response = build_response(content: [
+      tool_use_block(id: "toolu_1", name: "report_bank_statement", input: { "transactions" => [] })
+    ])
+    client = stub_client(response)
+
+    error = assert_raises(Provider::Anthropic::Error) do
+      Provider::Anthropic::BankStatementExtractor.new(
+        client: client,
+        model: "claude-sonnet-4-6",
+        pdf_content: @pdf_content
+      ).extract
+    end
+    assert_match(/required schema/, error.message)
   end
 
   private
@@ -137,5 +174,17 @@ class Provider::Anthropic::BankStatementExtractorTest < ActiveSupport::TestCase
 
     def tool_use_block(id:, name:, input:)
       OpenStruct.new(type: :tool_use, id: id, name: name, input: input)
+    end
+
+    def valid_payload(transactions: [])
+      {
+        "bank_name" => "Bank of Example",
+        "account_holder" => "Jane Doe",
+        "account_number" => "1234",
+        "statement_period" => { "start_date" => "2026-03-01", "end_date" => "2026-03-31" },
+        "opening_balance" => 1000.0,
+        "closing_balance" => 1500.0,
+        "transactions" => transactions
+      }
     end
 end

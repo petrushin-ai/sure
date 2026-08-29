@@ -1,11 +1,12 @@
 class Provider::Openai::BankStatementExtractor
   MAX_CHARS_PER_CHUNK = 3000
-  attr_reader :client, :pdf_content, :model
+  attr_reader :client, :pdf_content, :model, :custom_provider
 
-  def initialize(client:, pdf_content:, model:)
+  def initialize(client:, pdf_content:, model:, custom_provider: false)
     @client = client
     @pdf_content = pdf_content
     @model = model
+    @custom_provider = custom_provider
   end
 
   def extract
@@ -104,7 +105,7 @@ class Provider::Openai::BankStatementExtractor
           { role: "system", content: is_first_chunk ? instructions_with_metadata : instructions_transactions_only },
           { role: "user", content: "Extract transactions:\n\n#{text}" }
         ],
-        response_format: { type: "json_object" }
+        response_format: response_format
       }
 
       response = client.chat(parameters: params)
@@ -113,6 +114,10 @@ class Provider::Openai::BankStatementExtractor
       raise Provider::Openai::Error, "No response from AI" if content.blank?
 
       parsed = parse_json_response(content)
+      parsed = canonicalize_payload(parsed) if custom_provider
+      unless Provider::LlmConcept.valid_bank_statement_extraction_payload?(parsed)
+        raise Provider::Openai::Error, "Bank statement response did not match the required schema"
+      end
 
       {
         transactions: normalize_transactions(parsed["transactions"] || []),
@@ -133,7 +138,47 @@ class Provider::Openai::BankStatementExtractor
       JSON.parse(cleaned)
     rescue JSON::ParserError => e
       Rails.logger.error("BankStatementExtractor JSON parse error: #{e.message} (content_length=#{content.to_s.bytesize})")
-      { "transactions" => [] }
+      raise Provider::Openai::Error, "Could not parse bank statement extraction response"
+    end
+
+    def response_format
+      return { type: "json_object" } if custom_provider
+
+      {
+        type: "json_schema",
+        json_schema: {
+          name: "sure_bank_statement_extraction",
+          strict: true,
+          schema: Provider::LlmConcept.bank_statement_json_schema
+        }
+      }
+    end
+
+    def canonicalize_payload(payload)
+      data = payload.deep_stringify_keys
+      period = data["statement_period"].is_a?(Hash) ? data["statement_period"].stringify_keys : {}
+
+      {
+        "bank_name" => data["bank_name"],
+        "account_holder" => data["account_holder"],
+        "account_number" => data["account_number"],
+        "statement_period" => {
+          "start_date" => period["start_date"],
+          "end_date" => period["end_date"]
+        },
+        "opening_balance" => parse_amount(data["opening_balance"]),
+        "closing_balance" => parse_amount(data["closing_balance"]),
+        "transactions" => Array(data["transactions"]).map do |transaction|
+          transaction = transaction.stringify_keys
+          {
+            "date" => parse_date(transaction["date"]),
+            "description" => transaction["description"] || transaction["name"] || transaction["merchant"],
+            "amount" => parse_amount(transaction["amount"]),
+            "reference" => transaction["reference"] || transaction["notes"],
+            "category" => transaction["category"] || transaction["type"]
+          }
+        end
+      }
     end
 
     def deduplicate_transactions(transactions)
@@ -182,11 +227,14 @@ class Provider::Openai::BankStatementExtractor
     def parse_amount(amount)
       return nil if amount.nil?
 
-      if amount.is_a?(Numeric)
-        amount.to_f
-      else
-        amount.to_s.gsub(/[^0-9.\-]/, "").to_f
-      end
+      return amount.to_f if amount.is_a?(Numeric)
+
+      normalized = amount.to_s.gsub(/[^0-9.\-]/, "")
+      return nil unless normalized.match?(/\d/)
+
+      Float(normalized)
+    rescue ArgumentError
+      nil
     end
 
     def infer_category(txn)
@@ -196,18 +244,32 @@ class Provider::Openai::BankStatementExtractor
     def instructions_with_metadata
       <<~INSTRUCTIONS.strip
         Extract bank statement data as JSON. Return:
-        {"bank_name":"...","account_holder":"...","account_number":"last 4 digits","statement_period":{"start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD"},"opening_balance":0.00,"closing_balance":0.00,"transactions":[{"date":"YYYY-MM-DD","description":"...","amount":-0.00}]}
+        {"bank_name":"...","account_holder":"...","account_number":"last 4 digits","statement_period":{"start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD"},"opening_balance":0.00,"closing_balance":0.00,"transactions":[{"date":"YYYY-MM-DD","description":"...","amount":-0.00,"reference":null,"category":null}]}
 
-        Rules: Negative amounts for debits/expenses, positive for credits/deposits. Dates as YYYY-MM-DD. Extract ALL transactions. JSON only, no markdown.
+        Rules:
+        - Extract ALL transactions in document order
+        - Preserve each transaction description exactly as printed
+        - Negative amounts for debits/expenses, positive for credits/deposits
+        - Dates as YYYY-MM-DD
+        - Extract reference and category only when clearly visible; otherwise return null
+        - Return null for unavailable statement metadata; do not invent values
+        - JSON only, no markdown
       INSTRUCTIONS
     end
 
     def instructions_transactions_only
       <<~INSTRUCTIONS.strip
-        Extract transactions from bank statement text as JSON. Return:
-        {"transactions":[{"date":"YYYY-MM-DD","description":"...","amount":-0.00}]}
+        Extract transactions from this continuation chunk as JSON. Return the complete response contract:
+        {"bank_name":null,"account_holder":null,"account_number":null,"statement_period":{"start_date":null,"end_date":null},"opening_balance":null,"closing_balance":null,"transactions":[{"date":"YYYY-MM-DD","description":"...","amount":-0.00,"reference":null,"category":null}]}
 
-        Rules: Negative amounts for debits/expenses, positive for credits/deposits. Dates as YYYY-MM-DD. Extract ALL transactions. JSON only, no markdown.
+        Rules:
+        - Extract ALL transactions in document order
+        - Preserve each transaction description exactly as printed
+        - Negative amounts for debits/expenses, positive for credits/deposits
+        - Dates as YYYY-MM-DD
+        - Extract reference and category only when clearly visible; otherwise return null
+        - Return null for unavailable metadata; do not invent values
+        - JSON only, no markdown
       INSTRUCTIONS
     end
 end

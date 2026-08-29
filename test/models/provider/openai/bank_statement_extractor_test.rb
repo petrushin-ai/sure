@@ -21,15 +21,19 @@ class Provider::Openai::BankStatementExtractorTest < ActiveSupport::TestCase
             "opening_balance" => 5000.00,
             "closing_balance" => 4500.00,
             "transactions" => [
-              { "date" => "2024-01-15", "description" => "Coffee Shop", "amount" => -5.50 },
-              { "date" => "2024-01-20", "description" => "Salary Deposit", "amount" => 3000.00 }
+              { "date" => "2024-01-15", "description" => "Coffee Shop", "amount" => -5.50, "reference" => nil, "category" => nil },
+              { "date" => "2024-01-20", "description" => "Salary Deposit", "amount" => 3000.00, "reference" => nil, "category" => nil }
             ]
           }.to_json
         }
       } ]
     }
 
-    @client.expects(:chat).returns(mock_response)
+    captured = nil
+    @client.expects(:chat).with do |params|
+      captured = params
+      true
+    end.returns(mock_response)
 
     extractor = Provider::Openai::BankStatementExtractor.new(
       client: @client,
@@ -53,6 +57,11 @@ class Provider::Openai::BankStatementExtractorTest < ActiveSupport::TestCase
     assert_equal "2024-01-15", first_txn[:date]
     assert_equal "Coffee Shop", first_txn[:name]
     assert_equal(-5.50, first_txn[:amount])
+
+    response_format = captured.dig(:parameters, :response_format)
+    assert_equal "json_schema", response_format[:type]
+    assert_equal true, response_format.dig(:json_schema, :strict)
+    assert_equal Provider::LlmConcept.bank_statement_json_schema, response_format.dig(:json_schema, :schema)
   end
 
   test "handles empty PDF content" do
@@ -119,7 +128,8 @@ class Provider::Openai::BankStatementExtractorTest < ActiveSupport::TestCase
     extractor = Provider::Openai::BankStatementExtractor.new(
       client: @client,
       pdf_content: "dummy",
-      model: @model
+      model: @model,
+      custom_provider: true
     )
 
     # Mock multiple pages that will create multiple chunks
@@ -158,7 +168,8 @@ class Provider::Openai::BankStatementExtractorTest < ActiveSupport::TestCase
     extractor = Provider::Openai::BankStatementExtractor.new(
       client: @client,
       pdf_content: "dummy",
-      model: @model
+      model: @model,
+      custom_provider: true
     )
 
     extractor.stubs(:extract_pages_from_pdf).returns([ "Page 1 text" ])
@@ -170,7 +181,7 @@ class Provider::Openai::BankStatementExtractorTest < ActiveSupport::TestCase
     assert_equal(-100.0, result[:transactions][2][:amount])
   end
 
-  test "handles malformed JSON response gracefully" do
+  test "raises on malformed JSON instead of silently returning no transactions" do
     mock_response = {
       "choices" => [ {
         "message" => {
@@ -189,9 +200,25 @@ class Provider::Openai::BankStatementExtractorTest < ActiveSupport::TestCase
 
     extractor.stubs(:extract_pages_from_pdf).returns([ "Page 1 text" ])
 
-    result = extractor.extract
+    error = assert_raises(Provider::Openai::Error) { extractor.extract }
+    assert_match(/Could not parse bank statement extraction response/, error.message)
+  end
 
-    # Should return empty transactions on parse error
-    assert_equal [], result[:transactions]
+  test "raises when an official OpenAI response does not match the required schema" do
+    mock_response = {
+      "choices" => [ {
+        "message" => { "content" => { "transactions" => [] }.to_json }
+      } ]
+    }
+    @client.expects(:chat).returns(mock_response)
+    extractor = Provider::Openai::BankStatementExtractor.new(
+      client: @client,
+      pdf_content: "dummy",
+      model: @model
+    )
+    extractor.stubs(:extract_pages_from_pdf).returns([ "Page 1 text" ])
+
+    error = assert_raises(Provider::Openai::Error) { extractor.extract }
+    assert_match(/required schema/, error.message)
   end
 end

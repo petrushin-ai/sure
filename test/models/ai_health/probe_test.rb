@@ -253,6 +253,59 @@ class AiHealth::ProbeTest < ActiveSupport::TestCase
     assert result.passing?
   end
 
+  test "bank statement probe exercises the real OpenAI transaction extractor and exact schema" do
+    payload = {
+      "bank_name" => AiHealth::Probe::PDF_TEST_INSTITUTION,
+      "account_holder" => "Health Check",
+      "account_number" => nil,
+      "statement_period" => { "start_date" => "2026-01-01", "end_date" => "2026-01-31" },
+      "opening_balance" => 100.0,
+      "closing_balance" => 125.0,
+      "transactions" => [
+        { "date" => "2026-01-10", "description" => "HEALTH CHECK DEPOSIT", "amount" => 50.0, "reference" => "HC-DEP", "category" => "Income" },
+        { "date" => "2026-01-20", "description" => "HEALTH CHECK PURCHASE", "amount" => -25.0, "reference" => "HC-PUR", "category" => "Test Expenses" }
+      ]
+    }
+    captured = nil
+    client = mock("openai_client")
+    client.expects(:chat).with do |params|
+      captured = params
+      true
+    end.returns({ "choices" => [ { "message" => { "content" => payload.to_json } } ] })
+    @probe.stubs(:openai_client).returns(client)
+
+    result = @probe.pdf_transaction_extraction(
+      provider: :openai,
+      endpoint: "https://api.openai.com/v1",
+      access_token: "token",
+      model: "gpt-4.1"
+    )
+
+    assert result.passing?
+    assert_equal "json_schema", captured.dig(:parameters, :response_format, :type)
+    assert_equal true, captured.dig(:parameters, :response_format, :json_schema, :strict)
+    assert_equal Provider::LlmConcept.bank_statement_json_schema,
+                 captured.dig(:parameters, :response_format, :json_schema, :schema)
+  end
+
+  test "bank statement probe reports a recognition mismatch when a transaction is wrong" do
+    result = AiHealth::Probe::PDF_TRANSACTION_TEST_EXPECTED_DATA.deep_dup
+    result[:transactions][1][:amount] = -20.0
+    Provider::Openai::BankStatementExtractor.any_instance.stubs(:extract).returns(result)
+    Rails.logger.stubs(:error)
+    DebugLogEntry.stubs(:capture)
+
+    probe_result = @probe.pdf_transaction_extraction(
+      provider: :openai,
+      endpoint: "https://api.openai.com/v1",
+      access_token: "token",
+      model: "gpt-4.1"
+    )
+
+    assert probe_result.failing?
+    assert_equal :recognition_mismatch, probe_result.failure_code
+  end
+
   test "failed LLM probe writes a system-wide debug entry and Rails log without secrets" do
     models = stub(list: { "data" => [ { "id" => "another-model" } ] })
     @probe.stubs(:openai_client).returns(stub(models: models))

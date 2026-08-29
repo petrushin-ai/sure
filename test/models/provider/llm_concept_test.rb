@@ -27,6 +27,39 @@ class Provider::LlmConceptTest < ActiveSupport::TestCase
     end
   end
 
+  test "bank statement schema requires the exact Sure extraction shape" do
+    schema = Provider::LlmConcept.bank_statement_json_schema
+    period = schema.dig(:properties, :statement_period)
+    transaction = schema.dig(:properties, :transactions, :items)
+
+    assert_equal Provider::LlmConcept::BANK_STATEMENT_KEYS, schema[:required]
+    assert_equal false, schema[:additionalProperties]
+    assert_equal Provider::LlmConcept::BANK_STATEMENT_PERIOD_KEYS, period[:required]
+    assert_equal false, period[:additionalProperties]
+    assert_equal Provider::LlmConcept::BANK_STATEMENT_TRANSACTION_KEYS, transaction[:required]
+    assert_equal false, transaction[:additionalProperties]
+  end
+
+  test "validates a complete bank statement extraction payload" do
+    assert Provider::LlmConcept.valid_bank_statement_extraction_payload?(valid_bank_statement_payload)
+  end
+
+  test "rejects incomplete or incorrectly typed bank statement extraction payloads" do
+    payloads = [
+      valid_bank_statement_payload.except("bank_name"),
+      valid_bank_statement_payload.merge("unexpected" => true),
+      valid_bank_statement_payload.merge("statement_period" => { "start_date" => "03/01/2026", "end_date" => nil }),
+      valid_bank_statement_payload.merge("opening_balance" => "1000.00"),
+      valid_bank_statement_payload.merge("transactions" => [ valid_transaction.except("reference") ]),
+      valid_bank_statement_payload.merge("transactions" => [ valid_transaction.merge("date" => "03/05/2026") ]),
+      valid_bank_statement_payload.merge("transactions" => [ valid_transaction.merge("amount" => "-4.50") ])
+    ]
+
+    payloads.each do |payload|
+      assert_not Provider::LlmConcept.valid_bank_statement_extraction_payload?(payload)
+    end
+  end
+
   private
     def pdf_result(extracted_data: valid_extracted_data)
       Provider::LlmConcept::PdfProcessingResult.new(
@@ -46,6 +79,28 @@ class Provider::LlmConceptTest < ActiveSupport::TestCase
         "closing_balance" => 1500.0,
         "currency" => "USD",
         "account_holder" => "Account Holder"
+      }
+    end
+
+    def valid_bank_statement_payload
+      {
+        "bank_name" => "Bank of Example",
+        "account_holder" => "Account Holder",
+        "account_number" => "1234",
+        "statement_period" => { "start_date" => "2026-03-01", "end_date" => "2026-03-31" },
+        "opening_balance" => 1000.0,
+        "closing_balance" => 1500.0,
+        "transactions" => [ valid_transaction ]
+      }
+    end
+
+    def valid_transaction
+      {
+        "date" => "2026-03-05",
+        "description" => "Coffee",
+        "amount" => -4.5,
+        "reference" => nil,
+        "category" => nil
       }
     end
 end
