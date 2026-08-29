@@ -94,9 +94,9 @@ publish. A stale or non-applicable patch is a hard failure.
 
 ### SURE-006 — Complete native Binance balance synchronization
 
-- Source: `fix/binance-complete-account-sync` and
-  [`docs/hosting/binance.md`](hosting/binance.md); replace this branch reference
-  with the fork PR and merge commit after merge.
+- Source: [`petrushin-ai/sure#6`](https://github.com/petrushin-ai/sure/pull/6)
+  and [`docs/hosting/binance.md`](hosting/binance.md); record the merge commit
+  here after merge.
 - Purpose: synchronize Spot, Funding, Cross/Isolated Margin, Simple Earn,
   BFUSD/RWUSD, USDⓈ-M/COIN-M Futures, Options and Portfolio Margin directly
   from Binance; exclude current positions worth less than `$1`; retain
