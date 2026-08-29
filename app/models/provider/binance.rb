@@ -14,6 +14,10 @@ class Provider::Binance
   # in an URL (e.g. https://user:password@host).
   SPOT_BASE_URL = "https://api.binance.com".freeze
   FUTURES_BASE_URL = "https://fapi.binance.com".freeze
+  COIN_FUTURES_BASE_URL = "https://dapi.binance.com".freeze
+  OPTIONS_BASE_URL = "https://eapi.binance.com".freeze
+  PORTFOLIO_MARGIN_BASE_URL = "https://papi.binance.com".freeze
+  EARN_PAGE_SIZE = 100
 
   base_uri SPOT_BASE_URL
   default_options.merge!({ timeout: 30 }.merge(httparty_ssl_options))
@@ -35,14 +39,34 @@ class Provider::Binance
     signed_get("/sapi/v1/margin/account")
   end
 
+  # Isolated margin accounts — one response contains every enabled symbol when
+  # the optional symbols parameter is omitted.
+  def get_isolated_margin_account
+    signed_get("/sapi/v1/margin/isolated/account")
+  end
+
+  # Funding wallet (P2P, Pay, Card and Gift Card balances). Binance exposes
+  # this read-only query as POST even though it does not mutate the account.
+  def get_funding_wallet
+    signed_post("/sapi/v1/asset/get-funding-asset", extra_params: { "needBtcValuation" => "false" })
+  end
+
   # Simple Earn flexible positions — requires signed request
   def get_simple_earn_flexible
-    signed_get("/sapi/v1/simple-earn/flexible/position")
+    paginate_rows("/sapi/v1/simple-earn/flexible/position")
   end
 
   # Simple Earn locked positions — requires signed request
   def get_simple_earn_locked
-    signed_get("/sapi/v1/simple-earn/locked/position")
+    paginate_rows("/sapi/v1/simple-earn/locked/position")
+  end
+
+  def get_bfusd_account
+    signed_get("/sapi/v1/bfusd/account")
+  end
+
+  def get_rwusd_account
+    signed_get("/sapi/v1/rwusd/account")
   end
 
   # Public endpoint — no auth needed
@@ -52,6 +76,8 @@ class Provider::Binance
     response = self.class.get("/api/v3/ticker/price", query: { symbol: symbol })
     data = handle_response(response)
     data["price"]
+  rescue RateLimitError
+    raise
   rescue StandardError => e
     Rails.logger.warn("Provider::Binance: failed to fetch price for #{symbol}: #{e.message}")
     nil
@@ -75,6 +101,8 @@ class Provider::Binance
 
     # Binance klines format: [ Open time, Open, High, Low, Close (index 4), ... ]
     data.first[4]
+  rescue RateLimitError
+    raise
   rescue StandardError => e
     Rails.logger.warn("Provider::Binance: failed to fetch historical price for #{symbol} on #{date}: #{e.message}")
     nil
@@ -95,6 +123,28 @@ class Provider::Binance
   # USDⓈ-M Futures account — requires signed request
   def get_futures_account
     signed_get("/fapi/v2/account", base_url: FUTURES_BASE_URL)
+  end
+
+  # COIN-M Futures account.
+  def get_coin_futures_account
+    signed_get("/dapi/v1/account", base_url: COIN_FUTURES_BASE_URL)
+  end
+
+  # Standalone Options account. Portfolio Margin accounts are imported through
+  # their aggregate balance endpoint instead to avoid double counting.
+  def get_options_account
+    signed_get("/eapi/v1/account", base_url: OPTIONS_BASE_URL)
+  end
+
+  # Classic Portfolio Margin aggregates cross margin, USDⓈ-M Futures and
+  # COIN-M Futures. The endpoint returns an array of per-asset balances.
+  def get_portfolio_margin_balance
+    signed_get("/papi/v1/balance", base_url: PORTFOLIO_MARGIN_BASE_URL)
+  end
+
+  # Portfolio Margin Pro uses the main SAPI host and also reports Options.
+  def get_portfolio_margin_pro_balance
+    signed_get("/sapi/v1/portfolio/balance")
   end
 
   # Futures trade history for a single symbol
@@ -143,11 +193,44 @@ class Provider::Binance
 
   private
 
+    def paginate_rows(path)
+      current = 1
+      rows = []
+      raw_pages = []
+
+      loop do
+        page = signed_get(path, extra_params: {
+          "current" => current.to_s,
+          "size" => EARN_PAGE_SIZE.to_s
+        })
+        raw_pages << page
+
+        batch = page.is_a?(Hash) ? Array(page["rows"]) : []
+        rows.concat(batch)
+        total = page.is_a?(Hash) ? page["total"].to_i : rows.size
+
+        break if batch.size < EARN_PAGE_SIZE || rows.size >= total
+
+        current += 1
+      end
+
+      { "rows" => rows, "total" => rows.size, "pages" => raw_pages.size }
+    end
+
     def signed_get(path, extra_params: {}, base_url: SPOT_BASE_URL)
+      signed_request(:get, path, extra_params: extra_params, base_url: base_url)
+    end
+
+    def signed_post(path, extra_params: {}, base_url: SPOT_BASE_URL)
+      signed_request(:post, path, extra_params: extra_params, base_url: base_url)
+    end
+
+    def signed_request(http_method, path, extra_params:, base_url:)
       params = timestamp_params.merge(extra_params)
       query_string = URI.encode_www_form(params.sort)
 
-      response = self.class.get(
+      response = self.class.public_send(
+        http_method,
         path,
         base_uri: base_url,
         query: "#{query_string}&signature=#{sign(query_string)}",
@@ -180,7 +263,7 @@ class Provider::Binance
         parsed
       when 401
         raise AuthenticationError, extract_error_message(parsed) || "Unauthorized"
-      when 429
+      when 418, 429
         raise RateLimitError, "Rate limit exceeded"
       else
         msg = extract_error_message(parsed) || "API error: #{response.code}"

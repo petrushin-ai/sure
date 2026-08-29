@@ -28,14 +28,12 @@ class BinanceItem::SpotImporterTest < ActiveSupport::TestCase
     assert_equal "2.0", btc[:total]
   end
 
-  test "returns empty assets on API error" do
+  test "propagates authentication errors so the sync stops immediately" do
     @provider.stubs(:get_spot_account).raises(Provider::Binance::AuthenticationError, "Invalid key")
 
-    result = BinanceItem::SpotImporter.new(@item, provider: @provider).import
-
-    assert_equal "spot", result[:source]
-    assert_equal [], result[:assets]
-    assert_nil result[:raw]
+    assert_raises Provider::Binance::AuthenticationError do
+      BinanceItem::SpotImporter.new(@item, provider: @provider).import
+    end
   end
 
   test "filters out zero-balance assets" do

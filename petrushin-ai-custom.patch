@@ -73,6 +73,36 @@ index 3dc55594..d5bfb86e 100644
  ## Backstory
  
  The [Maybe Finance](https://github.com/maybe-finance/maybe) (archived/abandoned repo) team spent most of 2021–2022 building a full-featured personal finance and wealth management app. It even included an “Ask an Advisor” feature that connected users with a real CFP/CFA — all included with your subscription.
+diff --git a/app/jobs/sync_binance_job.rb b/app/jobs/sync_binance_job.rb
+new file mode 100644
+index 00000000..b8493580
+--- /dev/null
++++ b/app/jobs/sync_binance_job.rb
+@@ -0,0 +1,24 @@
++class SyncBinanceJob < ApplicationJob
++  queue_as :scheduled
++  sidekiq_options lock: :until_executed, on_conflict: :log
++
++  def perform
++    Rails.logger.info("Starting scheduled Binance sync")
++
++    BinanceItem.active.find_each do |item|
++      item.sync_later
++    rescue => e
++      DebugLogEntry.capture(
++        category: "provider_sync",
++        level: "error",
++        message: "Scheduled Binance sync could not be enqueued",
++        source: self.class.name,
++        provider_key: "binance",
++        family: item.family,
++        metadata: { binance_item_id: item.id, error_class: e.class.name, error: e.message }
++      )
++    end
++
++    Rails.logger.info("Completed scheduled Binance sync")
++  end
++end
 diff --git a/app/models/ai_health.rb b/app/models/ai_health.rb
 index e20fee29..a2444bf7 100644
 --- a/app/models/ai_health.rb
@@ -297,6 +327,711 @@ index 21cb5798..25dc9673 100644
            "<< /Length #{content.bytesize} >>\nstream\n#{content}endstream",
            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
          ]
+diff --git a/app/models/binance_account.rb b/app/models/binance_account.rb
+index 14749894..fb0698eb 100644
+--- a/app/models/binance_account.rb
++++ b/app/models/binance_account.rb
+@@ -3,7 +3,7 @@
+ class BinanceAccount < ApplicationRecord
+   include CurrencyNormalizable, Encryptable
+ 
+-  STABLECOINS = %w[USDT BUSD FDUSD TUSD USDC DAI].freeze
++  STABLECOINS = %w[USDT BUSD FDUSD TUSD USDC DAI BFUSD RWUSD].freeze
+ 
+   if encryption_ready?
+     encrypts :raw_payload
+diff --git a/app/models/binance_account/holdings_processor.rb b/app/models/binance_account/holdings_processor.rb
+index 64d1fb24..00a97bec 100644
+--- a/app/models/binance_account/holdings_processor.rb
++++ b/app/models/binance_account/holdings_processor.rb
+@@ -73,7 +73,7 @@ class BinanceAccount::HoldingsProcessor
+       symbol = asset["symbol"] || asset[:symbol]
+       source = asset["source"] || asset[:source]
+       return if symbol.blank?
+-      return if (asset["total"] || asset[:total]).to_d.zero?
++      return unless (asset["total"] || asset[:total]).to_d.positive?
+ 
+       holding_external_id(symbol, source)
+     end
+@@ -89,16 +89,20 @@ class BinanceAccount::HoldingsProcessor
+       total  = (asset["total"] || asset[:total]).to_d
+       source = asset["source"] || asset[:source]
+ 
+-      return if total.zero?
++      # Margin liabilities are reflected in the account's net balance. Sure's
++      # Holding model intentionally rejects negative quantities, so only the
++      # positive asset side is materialized as a holding.
++      return unless total.positive?
+ 
+       ticker   = symbol.include?(":") ? symbol : "CRYPTO:#{symbol}"
+       security = resolve_security(ticker, symbol)
+       return unless security
+ 
+-      price_usd = fetch_price(symbol)
++      price_usd = stored_usd_price(asset) || fetch_price(symbol)
+       return if price_usd.nil?
+ 
+       amount_usd = total * price_usd
++      return if amount_usd < BinanceItem::Importer::MIN_HOLDING_USD
+ 
+       # Stale rate metadata is intentionally discarded here — it is captured and
+       # surfaced at the account level by BinanceAccount::Processor#process_account!.
+@@ -148,4 +152,9 @@ class BinanceAccount::HoldingsProcessor
+       Rails.logger.warn "BinanceAccount::HoldingsProcessor - no price found for #{symbol} across all quote pairs; skipping holding"
+       nil
+     end
++
++    def stored_usd_price(asset)
++      value = asset["usd_price"] || asset[:usd_price]
++      value.present? ? value.to_d : nil
++    end
+ end
+diff --git a/app/models/binance_item/coin_futures_importer.rb b/app/models/binance_item/coin_futures_importer.rb
+new file mode 100644
+index 00000000..9bfcd6be
+--- /dev/null
++++ b/app/models/binance_item/coin_futures_importer.rb
+@@ -0,0 +1,40 @@
++# frozen_string_literal: true
++
++# Fetches COIN-M Futures equity by settlement asset.
++class BinanceItem::CoinFuturesImporter
++  attr_reader :binance_item, :provider
++
++  def initialize(binance_item, provider:)
++    @binance_item = binance_item
++    @provider = provider
++  end
++
++  def import
++    raw = provider.get_coin_futures_account
++    assets = Array(raw["assets"]).filter_map { |asset| normalize(asset) }
++
++    { assets: assets, raw: raw, source: "coin_futures" }
++  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++    raise
++  rescue => e
++    Rails.logger.error "BinanceItem::CoinFuturesImporter #{binance_item.id} - #{e.message}"
++    { assets: [], raw: nil, source: "coin_futures", error: e.message }
++  end
++
++  private
++
++    def normalize(asset)
++      wallet = asset["walletBalance"].to_d
++      unrealized = asset["unrealizedProfit"].to_d
++      total = asset["marginBalance"].presence&.to_d || wallet + unrealized
++      return if total.zero?
++
++      free = asset["availableBalance"].presence&.to_d || wallet
++      {
++        symbol: asset["asset"],
++        free: free.to_s("F"),
++        locked: (wallet - free).to_s("F"),
++        total: total.to_s("F")
++      }
++    end
++end
+diff --git a/app/models/binance_item/earn_importer.rb b/app/models/binance_item/earn_importer.rb
+index 111e054e..3edbf44f 100644
+--- a/app/models/binance_item/earn_importer.rb
++++ b/app/models/binance_item/earn_importer.rb
+@@ -42,6 +42,8 @@ class BinanceItem::EarnImporter
+       raw: { "flexible" => flexible_raw, "locked" => locked_raw },
+       source: "earn"
+     }
++  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++    raise
+   rescue => e
+     Rails.logger.error "BinanceItem::EarnImporter #{binance_item.id} - #{e.message}"
+     { assets: [], raw: nil, source: "earn", error: e.message }
+@@ -51,6 +53,8 @@ class BinanceItem::EarnImporter
+ 
+     def fetch_flexible
+       provider.get_simple_earn_flexible
++    rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++      raise
+     rescue => e
+       @errors["flexible"] = e.message
+       Rails.logger.warn "BinanceItem::EarnImporter #{binance_item.id} - flexible failed: #{e.message}"
+@@ -59,6 +63,8 @@ class BinanceItem::EarnImporter
+ 
+     def fetch_locked
+       provider.get_simple_earn_locked
++    rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++      raise
+     rescue => e
+       @errors["locked"] = e.message
+       Rails.logger.warn "BinanceItem::EarnImporter #{binance_item.id} - locked failed: #{e.message}"
+diff --git a/app/models/binance_item/funding_importer.rb b/app/models/binance_item/funding_importer.rb
+new file mode 100644
+index 00000000..6e2ca8fb
+--- /dev/null
++++ b/app/models/binance_item/funding_importer.rb
+@@ -0,0 +1,41 @@
++# frozen_string_literal: true
++
++# Fetches the Funding wallet used by P2P, Pay, Card and Gift Card.
++class BinanceItem::FundingImporter
++  attr_reader :binance_item, :provider
++
++  def initialize(binance_item, provider:)
++    @binance_item = binance_item
++    @provider = provider
++  end
++
++  def import
++    raw = provider.get_funding_wallet
++    assets = Array(raw).filter_map do |row|
++      free = row["free"].to_d
++      locked = row["locked"].to_d + row["freeze"].to_d + row["withdrawing"].to_d
++      total = free + locked
++      next if total.zero?
++
++      normalized_asset(row["asset"], free, locked, total)
++    end
++
++    { assets: assets, raw: raw, source: "funding" }
++  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++    raise
++  rescue => e
++    Rails.logger.error "BinanceItem::FundingImporter #{binance_item.id} - #{e.message}"
++    { assets: [], raw: nil, source: "funding", error: e.message }
++  end
++
++  private
++
++    def normalized_asset(symbol, free, locked, total)
++      {
++        symbol: symbol,
++        free: free.to_s("F"),
++        locked: locked.to_s("F"),
++        total: total.to_s("F")
++      }
++    end
++end
+diff --git a/app/models/binance_item/futures_importer.rb b/app/models/binance_item/futures_importer.rb
+index 8371d377..1ba5d2fa 100644
+--- a/app/models/binance_item/futures_importer.rb
++++ b/app/models/binance_item/futures_importer.rb
+@@ -38,6 +38,8 @@ class BinanceItem::FuturesImporter
+     end
+ 
+     { assets: assets, raw: raw, source: "futures" }
++  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++    raise
+   rescue => e
+     Rails.logger.error "BinanceItem::FuturesImporter #{binance_item.id} - #{e.message}"
+     { assets: [], raw: nil, source: "futures", error: e.message }
+diff --git a/app/models/binance_item/importer.rb b/app/models/binance_item/importer.rb
+index 5490a361..2d9bfd8f 100644
+--- a/app/models/binance_item/importer.rb
++++ b/app/models/binance_item/importer.rb
+@@ -2,6 +2,8 @@
+ 
+ # Orchestrates all Binance sub-importers and upserts a single combined BinanceAccount.
+ class BinanceItem::Importer
++  MIN_HOLDING_USD = BigDecimal("1")
++
+   # Every sub-importer swallows its own error and answers with an empty asset
+   # list, so "the wallet is empty" and "nothing could be fetched" arrive here
+   # looking identical. Raising on the second keeps the sync honest instead of
+@@ -18,12 +20,7 @@ class BinanceItem::Importer
+   def import
+     Rails.logger.info "BinanceItem::Importer #{binance_item.id} - starting import"
+ 
+-    spot_result   = BinanceItem::SpotImporter.new(binance_item, provider: binance_provider).import
+-    margin_result = BinanceItem::MarginImporter.new(binance_item, provider: binance_provider).import
+-    earn_result   = BinanceItem::EarnImporter.new(binance_item, provider: binance_provider).import
+-    futures_result = BinanceItem::FuturesImporter.new(binance_item, provider: binance_provider).import
+-
+-    results = [ spot_result, margin_result, earn_result, futures_result ]
++    results = base_results + margin_and_derivatives_results
+     all_assets = results.flat_map { |result| tagged_assets(result) }
+ 
+     if results.all? { |result| result[:error].present? }
+@@ -36,6 +33,7 @@ class BinanceItem::Importer
+     # transient error or a permission-scoped key. Their last known assets are
+     # carried instead: stale until the source answers again, which beats gone.
+     all_assets += carried_over_assets(results)
++    all_assets = apply_usd_cutoff(all_assets)
+ 
+     # An emptied wallet still has to be written down. Returning here left the
+     # previous payload in place, and the holdings processor reads that payload —
+@@ -45,24 +43,15 @@ class BinanceItem::Importer
+       return { success: true, assets_imported: 0, total_usd: 0 }
+     end
+ 
+-    total_usd = calculate_total_usd(all_assets)
++    total_usd = all_assets.sum { |asset| asset[:usd_value].to_d }.round(2)
+ 
+     upsert_binance_account(
+       all_assets: all_assets,
+       total_usd: total_usd,
+-      spot_raw: spot_result[:raw],
+-      margin_raw: margin_result[:raw],
+-      earn_raw: earn_result[:raw],
+-      futures_raw: futures_result[:raw]
++      results: results
+     )
+ 
+-    binance_item.upsert_binance_snapshot!({
+-      "spot" => spot_result[:raw],
+-      "margin" => margin_result[:raw],
+-      "earn" => earn_result[:raw],
+-      "futures" => futures_result[:raw],
+-      "imported_at" => Time.current.iso8601
+-    })
++    binance_item.upsert_binance_snapshot!(snapshot_payload(results))
+ 
+     Rails.logger.info "BinanceItem::Importer #{binance_item.id} - imported #{all_assets.size} assets, total_usd=#{total_usd}"
+ 
+@@ -71,8 +60,35 @@ class BinanceItem::Importer
+ 
+   private
+ 
++    def base_results
++      [
++        BinanceItem::SpotImporter.new(binance_item, provider: binance_provider).import,
++        BinanceItem::FundingImporter.new(binance_item, provider: binance_provider).import,
++        BinanceItem::IsolatedMarginImporter.new(binance_item, provider: binance_provider).import,
++        BinanceItem::EarnImporter.new(binance_item, provider: binance_provider).import,
++        BinanceItem::YieldAssetImporter.new(binance_item, provider: binance_provider).import
++      ]
++    end
++
++    def margin_and_derivatives_results
++      portfolio = BinanceItem::PortfolioMarginImporter.new(binance_item, provider: binance_provider).import
++      return [ portfolio ] if portfolio[:error].blank? && portfolio[:assets].any?
++
++      [
++        BinanceItem::MarginImporter.new(binance_item, provider: binance_provider).import,
++        BinanceItem::FuturesImporter.new(binance_item, provider: binance_provider).import,
++        BinanceItem::CoinFuturesImporter.new(binance_item, provider: binance_provider).import,
++        BinanceItem::OptionsImporter.new(binance_item, provider: binance_provider).import
++      ]
++    end
++
+     def tagged_assets(result)
+-      result[:assets].map { |a| a.merge(source: result[:source]) }
++      result[:assets].map do |asset|
++        asset.merge(
++          source: asset[:source].presence || result[:source],
++          source_key: result[:source]
++        )
++      end
+     end
+ 
+     def carried_over_assets(results)
+@@ -91,7 +107,7 @@ class BinanceItem::Importer
+ 
+       carried = previous
+         .map(&:deep_symbolize_keys)
+-        .select { |asset| sources.include?(asset[:source]) }
++        .select { |asset| sources.include?(asset[:source_key].presence || asset[:source].to_s.split(":").first) }
+ 
+       if carried.any?
+         Rails.logger.warn(
+@@ -119,27 +135,71 @@ class BinanceItem::Importer
+       )
+     end
+ 
+-    def calculate_total_usd(assets)
+-      assets.sum do |asset|
+-        quantity = asset[:total].to_d
+-        next 0 if quantity.zero?
++    def apply_usd_cutoff(assets)
++      @dust_omitted = []
++      @unpriced_assets = []
++
++      assets.filter_map do |asset|
++        current_price = price_for(asset[:symbol])
++        stored_price = asset[:usd_price].presence&.to_d || previous_price_for(asset)
++        price = current_price || stored_price
++
++        # An unavailable quote is not evidence that a live position is dust.
++        # Preserve it for the holdings processor and try again next sync.
++        if price.nil?
++          @unpriced_assets << { "symbol" => asset[:symbol], "source" => asset[:source] }
++          next asset.merge(usd_price: nil, usd_value: nil, price_status: "unavailable")
++        end
++
++        value = asset[:total].to_d * price
++        if value.abs < MIN_HOLDING_USD
++          @dust_omitted << {
++            "symbol" => asset[:symbol],
++            "source" => asset[:source],
++            "usd_value" => value.to_s("F")
++          }
++          next
++        end
+ 
+-        price = price_for(asset[:symbol])
+-        quantity * price
+-      end.round(2)
++        asset.merge(
++          usd_price: price.to_s("F"),
++          usd_value: value.to_s("F"),
++          price_status: current_price ? "current" : "stale"
++        )
++      end
+     end
+ 
+     def price_for(symbol)
+-      return 1.0 if BinanceAccount::STABLECOINS.include?(symbol)
++      return BigDecimal("1") if BinanceAccount::STABLECOINS.include?(symbol)
++
++      @price_cache ||= {}
++      return @price_cache[symbol] if @price_cache.key?(symbol)
+ 
+-      price = binance_provider.get_spot_price("#{symbol}USDT")
+-      price.to_d
++      @price_cache[symbol] = %w[USDT BUSD FDUSD].filter_map do |quote|
++        binance_provider.get_spot_price("#{symbol}#{quote}").presence&.to_d
++      end.first
++    rescue Provider::Binance::RateLimitError
++      raise
+     rescue => e
+       Rails.logger.warn "BinanceItem::Importer - could not get price for #{symbol}: #{e.message}"
+-      0
++      nil
+     end
+ 
+-    def upsert_binance_account(all_assets:, total_usd:, spot_raw:, margin_raw:, earn_raw:, futures_raw:)
++    def previous_price_for(asset)
++      previous = previous_priced_assets[[ asset[:symbol], asset[:source] ]]
++      previous&.dig("usd_price")&.to_d
++    end
++
++    def previous_priced_assets
++      @previous_priced_assets ||= Array(
++        binance_item.binance_accounts
++                    .find_by(account_type: "combined")
++                    &.raw_payload&.dig("assets")
++      ).select { |asset| asset["usd_price"].present? }
++       .index_by { |asset| [ asset["symbol"], asset["source"] ] }
++    end
++
++    def upsert_binance_account(all_assets:, total_usd:, results:)
+       ba = binance_item.binance_accounts.find_or_initialize_by(account_type: "combined")
+ 
+       ba.assign_attributes(
+@@ -147,14 +207,14 @@ class BinanceItem::Importer
+         currency: "USD",
+         current_balance: total_usd,
+         institution_metadata: build_institution_metadata(all_assets),
+-        raw_payload: {
+-          "spot" => spot_raw,
+-          "margin" => margin_raw,
+-          "earn" => earn_raw,
+-          "futures" => futures_raw,
++        raw_payload: raw_by_source(results).merge(
+           "assets" => all_assets.map(&:stringify_keys),
++          "source_status" => source_status(results),
++          "dust_omitted" => @dust_omitted,
++          "unpriced_assets" => @unpriced_assets,
++          "minimum_holding_usd" => MIN_HOLDING_USD.to_s("F"),
+           "fetched_at" => Time.current.iso8601
+-        }
++        )
+       )
+ 
+       ba.save!
+@@ -162,12 +222,37 @@ class BinanceItem::Importer
+     end
+ 
+     def build_institution_metadata(all_assets)
+-      %w[spot margin earn futures].each_with_object({}) do |source, hash|
+-        source_assets = all_assets.select { |a| a[:source] == source }
++      all_assets.group_by { |asset| asset[:source_key] }.each_with_object({}) do |(source, source_assets), hash|
+         hash[source] = {
+           "asset_count" => source_assets.size,
+-          "assets" => source_assets.map { |a| a[:symbol] }
++          "assets" => source_assets.map { |asset| asset[:symbol] }.uniq
+         }
+       end
+     end
++
++    def raw_by_source(results)
++      results.to_h { |result| [ result[:source], result[:raw] ] }
++    end
++
++    def snapshot_payload(results)
++      raw_by_source(results).merge(
++        "source_status" => source_status(results),
++        "dust_omitted" => @dust_omitted,
++        "unpriced_assets" => @unpriced_assets,
++        "minimum_holding_usd" => MIN_HOLDING_USD.to_s("F"),
++        "imported_at" => Time.current.iso8601
++      )
++    end
++
++    def source_status(results)
++      results.to_h do |result|
++        status = if result[:error].present?
++          { "status" => "unavailable", "error" => result[:error] }
++        else
++          { "status" => "ok", "asset_count" => result[:assets].size }
++        end
++
++        [ result[:source], status ]
++      end
++    end
+ end
+diff --git a/app/models/binance_item/isolated_margin_importer.rb b/app/models/binance_item/isolated_margin_importer.rb
+new file mode 100644
+index 00000000..0506e88a
+--- /dev/null
++++ b/app/models/binance_item/isolated_margin_importer.rb
+@@ -0,0 +1,47 @@
++# frozen_string_literal: true
++
++# Fetches every enabled isolated-margin pair. Each pair is kept as a distinct
++# source so the same asset held in two isolated wallets is not collapsed.
++class BinanceItem::IsolatedMarginImporter
++  attr_reader :binance_item, :provider
++
++  def initialize(binance_item, provider:)
++    @binance_item = binance_item
++    @provider = provider
++  end
++
++  def import
++    raw = provider.get_isolated_margin_account
++    assets = Array(raw["assets"]).flat_map { |account| parse_account(account) }
++
++    { assets: assets, raw: raw, source: "isolated_margin" }
++  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++    raise
++  rescue => e
++    Rails.logger.error "BinanceItem::IsolatedMarginImporter #{binance_item.id} - #{e.message}"
++    { assets: [], raw: nil, source: "isolated_margin", error: e.message }
++  end
++
++  private
++
++    def parse_account(account)
++      pair = account["symbol"].presence || "unknown"
++
++      %w[baseAsset quoteAsset].filter_map do |side|
++        asset = account[side]
++        next unless asset.is_a?(Hash)
++
++        net = asset["netAsset"].to_d
++        next if net.zero?
++
++        {
++          symbol: asset["asset"],
++          free: asset["free"].to_d.to_s("F"),
++          locked: asset["locked"].to_d.to_s("F"),
++          total: net.to_s("F"),
++          net: net.to_s("F"),
++          source: "isolated_margin:#{pair}"
++        }
++      end
++    end
++end
+diff --git a/app/models/binance_item/margin_importer.rb b/app/models/binance_item/margin_importer.rb
+index 3079a6ba..5a467d88 100644
+--- a/app/models/binance_item/margin_importer.rb
++++ b/app/models/binance_item/margin_importer.rb
+@@ -14,6 +14,8 @@ class BinanceItem::MarginImporter
+     raw = provider.get_margin_account
+     assets = parse_assets(raw["userAssets"] || [])
+     { assets: assets, raw: raw, source: "margin" }
++  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++    raise
+   rescue => e
+     Rails.logger.error "BinanceItem::MarginImporter #{binance_item.id} - #{e.message}"
+     { assets: [], raw: nil, source: "margin", error: e.message }
+diff --git a/app/models/binance_item/options_importer.rb b/app/models/binance_item/options_importer.rb
+new file mode 100644
+index 00000000..4d9108bb
+--- /dev/null
++++ b/app/models/binance_item/options_importer.rb
+@@ -0,0 +1,34 @@
++# frozen_string_literal: true
++
++# Fetches standalone Binance Options account equity.
++class BinanceItem::OptionsImporter
++  attr_reader :binance_item, :provider
++
++  def initialize(binance_item, provider:)
++    @binance_item = binance_item
++    @provider = provider
++  end
++
++  def import
++    raw = provider.get_options_account
++    assets = Array(raw["asset"]).filter_map do |asset|
++      total = asset["equity"].presence&.to_d || asset["marginBalance"].to_d
++      next if total.zero?
++
++      free = asset["available"].to_d
++      {
++        symbol: asset["asset"],
++        free: free.to_s("F"),
++        locked: (total - free).to_s("F"),
++        total: total.to_s("F")
++      }
++    end
++
++    { assets: assets, raw: raw, source: "options" }
++  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++    raise
++  rescue => e
++    Rails.logger.error "BinanceItem::OptionsImporter #{binance_item.id} - #{e.message}"
++    { assets: [], raw: nil, source: "options", error: e.message }
++  end
++end
+diff --git a/app/models/binance_item/portfolio_margin_importer.rb b/app/models/binance_item/portfolio_margin_importer.rb
+new file mode 100644
+index 00000000..8b910c8e
+--- /dev/null
++++ b/app/models/binance_item/portfolio_margin_importer.rb
+@@ -0,0 +1,66 @@
++# frozen_string_literal: true
++
++# Portfolio Margin consolidates cross margin and derivatives. When available it
++# replaces the overlapping standalone Margin/Futures/Options sources.
++class BinanceItem::PortfolioMarginImporter
++  attr_reader :binance_item, :provider
++
++  def initialize(binance_item, provider:)
++    @binance_item = binance_item
++    @provider = provider
++  end
++
++  def import
++    errors = []
++
++    begin
++      raw = provider.get_portfolio_margin_pro_balance
++      return result(raw, mode: "pro")
++    rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++      raise
++    rescue => e
++      errors << "pro: #{e.message}"
++    end
++
++    begin
++      raw = provider.get_portfolio_margin_balance
++      return result(raw, mode: "classic")
++    rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++      raise
++    rescue => e
++      errors << "classic: #{e.message}"
++    end
++
++    { assets: [], raw: nil, source: "portfolio_margin", error: errors.join("; ") }
++  end
++
++  private
++
++    def result(raw, mode:)
++      assets = Array(raw).filter_map { |asset| normalize(asset) }
++      {
++        assets: assets,
++        raw: { "mode" => mode, "balances" => raw },
++        source: "portfolio_margin",
++        aggregate: true
++      }
++    end
++
++    def normalize(asset)
++      wallet = asset["totalWalletBalance"].to_d
++      derivatives_pnl = asset["umUnrealizedPNL"].to_d + asset["cmUnrealizedPNL"].to_d
++      options_pnl = asset["optionEquity"].to_d - asset["optionWalletBalance"].to_d
++      total = wallet + derivatives_pnl + options_pnl
++      return if total.zero?
++
++      free = asset["crossMarginFree"].to_d + asset["umWalletBalance"].to_d +
++        asset["cmWalletBalance"].to_d + asset["optionWalletBalance"].to_d
++
++      {
++        symbol: asset["asset"],
++        free: free.to_s("F"),
++        locked: (total - free).to_s("F"),
++        total: total.to_s("F")
++      }
++    end
++end
+diff --git a/app/models/binance_item/spot_importer.rb b/app/models/binance_item/spot_importer.rb
+index eb04ab67..a873a0cb 100644
+--- a/app/models/binance_item/spot_importer.rb
++++ b/app/models/binance_item/spot_importer.rb
+@@ -15,6 +15,8 @@ class BinanceItem::SpotImporter
+     raw = provider.get_spot_account
+     assets = parse_assets(raw["balances"] || [])
+     { assets: assets, raw: raw, source: "spot" }
++  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++    raise
+   rescue => e
+     Rails.logger.error "BinanceItem::SpotImporter #{binance_item.id} - #{e.message}"
+     { assets: [], raw: nil, source: "spot", error: e.message }
+diff --git a/app/models/binance_item/yield_asset_importer.rb b/app/models/binance_item/yield_asset_importer.rb
+new file mode 100644
+index 00000000..fd37c1bd
+--- /dev/null
++++ b/app/models/binance_item/yield_asset_importer.rb
+@@ -0,0 +1,57 @@
++# frozen_string_literal: true
++
++# Fetches Binance's dedicated BFUSD and RWUSD yield accounts. These products
++# sit outside the ordinary Simple Earn position endpoints.
++class BinanceItem::YieldAssetImporter
++  attr_reader :binance_item, :provider
++
++  def initialize(binance_item, provider:)
++    @binance_item = binance_item
++    @provider = provider
++  end
++
++  def import
++    @errors = {}
++    bfusd = fetch(:bfusd) { provider.get_bfusd_account }
++    rwusd = fetch(:rwusd) { provider.get_rwusd_account }
++    assets = [
++      normalized_asset("BFUSD", bfusd&.dig("bfusdAmount")),
++      normalized_asset("RWUSD", rwusd&.dig("rwusdAmount"))
++    ].compact
++
++    result = {
++      assets: assets,
++      raw: { "bfusd" => bfusd, "rwusd" => rwusd },
++      source: "yield_assets"
++    }
++    result[:error] = errors.values.join("; ") if bfusd.nil? && rwusd.nil?
++    result
++  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++    raise
++  rescue => e
++    Rails.logger.error "BinanceItem::YieldAssetImporter #{binance_item.id} - #{e.message}"
++    { assets: [], raw: nil, source: "yield_assets", error: e.message }
++  end
++
++  private
++
++    def fetch(name)
++      yield
++    rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++      raise
++    rescue => e
++      errors[name] = e.message
++      nil
++    end
++
++    def errors
++      @errors ||= {}
++    end
++
++    def normalized_asset(symbol, amount)
++      total = amount.to_d
++      return if total.zero?
++
++      { symbol: symbol, free: total.to_s("F"), locked: "0.0", total: total.to_s("F") }
++    end
++end
 diff --git a/app/models/provider/anthropic/bank_statement_extractor.rb b/app/models/provider/anthropic/bank_statement_extractor.rb
 index e91d44b4..5a98d19a 100644
 --- a/app/models/provider/anthropic/bank_statement_extractor.rb
@@ -434,6 +1169,173 @@ index b19d9202..1c647e03 100644
      end
  
      def normalize_document_type(doc_type)
+diff --git a/app/models/provider/binance.rb b/app/models/provider/binance.rb
+index ad8833a1..015ea942 100644
+--- a/app/models/provider/binance.rb
++++ b/app/models/provider/binance.rb
+@@ -14,6 +14,10 @@ class Provider::Binance
+   # in an URL (e.g. https://user:password@host).
+   SPOT_BASE_URL = "https://api.binance.com".freeze
+   FUTURES_BASE_URL = "https://fapi.binance.com".freeze
++  COIN_FUTURES_BASE_URL = "https://dapi.binance.com".freeze
++  OPTIONS_BASE_URL = "https://eapi.binance.com".freeze
++  PORTFOLIO_MARGIN_BASE_URL = "https://papi.binance.com".freeze
++  EARN_PAGE_SIZE = 100
+ 
+   base_uri SPOT_BASE_URL
+   default_options.merge!({ timeout: 30 }.merge(httparty_ssl_options))
+@@ -35,14 +39,34 @@ class Provider::Binance
+     signed_get("/sapi/v1/margin/account")
+   end
+ 
++  # Isolated margin accounts — one response contains every enabled symbol when
++  # the optional symbols parameter is omitted.
++  def get_isolated_margin_account
++    signed_get("/sapi/v1/margin/isolated/account")
++  end
++
++  # Funding wallet (P2P, Pay, Card and Gift Card balances). Binance exposes
++  # this read-only query as POST even though it does not mutate the account.
++  def get_funding_wallet
++    signed_post("/sapi/v1/asset/get-funding-asset", extra_params: { "needBtcValuation" => "false" })
++  end
++
+   # Simple Earn flexible positions — requires signed request
+   def get_simple_earn_flexible
+-    signed_get("/sapi/v1/simple-earn/flexible/position")
++    paginate_rows("/sapi/v1/simple-earn/flexible/position")
+   end
+ 
+   # Simple Earn locked positions — requires signed request
+   def get_simple_earn_locked
+-    signed_get("/sapi/v1/simple-earn/locked/position")
++    paginate_rows("/sapi/v1/simple-earn/locked/position")
++  end
++
++  def get_bfusd_account
++    signed_get("/sapi/v1/bfusd/account")
++  end
++
++  def get_rwusd_account
++    signed_get("/sapi/v1/rwusd/account")
+   end
+ 
+   # Public endpoint — no auth needed
+@@ -52,6 +76,8 @@ class Provider::Binance
+     response = self.class.get("/api/v3/ticker/price", query: { symbol: symbol })
+     data = handle_response(response)
+     data["price"]
++  rescue RateLimitError
++    raise
+   rescue StandardError => e
+     Rails.logger.warn("Provider::Binance: failed to fetch price for #{symbol}: #{e.message}")
+     nil
+@@ -75,6 +101,8 @@ class Provider::Binance
+ 
+     # Binance klines format: [ Open time, Open, High, Low, Close (index 4), ... ]
+     data.first[4]
++  rescue RateLimitError
++    raise
+   rescue StandardError => e
+     Rails.logger.warn("Provider::Binance: failed to fetch historical price for #{symbol} on #{date}: #{e.message}")
+     nil
+@@ -97,6 +125,28 @@ class Provider::Binance
+     signed_get("/fapi/v2/account", base_url: FUTURES_BASE_URL)
+   end
+ 
++  # COIN-M Futures account.
++  def get_coin_futures_account
++    signed_get("/dapi/v1/account", base_url: COIN_FUTURES_BASE_URL)
++  end
++
++  # Standalone Options account. Portfolio Margin accounts are imported through
++  # their aggregate balance endpoint instead to avoid double counting.
++  def get_options_account
++    signed_get("/eapi/v1/account", base_url: OPTIONS_BASE_URL)
++  end
++
++  # Classic Portfolio Margin aggregates cross margin, USDⓈ-M Futures and
++  # COIN-M Futures. The endpoint returns an array of per-asset balances.
++  def get_portfolio_margin_balance
++    signed_get("/papi/v1/balance", base_url: PORTFOLIO_MARGIN_BASE_URL)
++  end
++
++  # Portfolio Margin Pro uses the main SAPI host and also reports Options.
++  def get_portfolio_margin_pro_balance
++    signed_get("/sapi/v1/portfolio/balance")
++  end
++
+   # Futures trade history for a single symbol
+   def get_futures_trades(symbol, limit: 1000, from_id: nil, start_time: nil, end_time: nil)
+     params = { "symbol" => symbol, "limit" => limit.to_s }
+@@ -143,11 +193,44 @@ class Provider::Binance
+ 
+   private
+ 
++    def paginate_rows(path)
++      current = 1
++      rows = []
++      raw_pages = []
++
++      loop do
++        page = signed_get(path, extra_params: {
++          "current" => current.to_s,
++          "size" => EARN_PAGE_SIZE.to_s
++        })
++        raw_pages << page
++
++        batch = page.is_a?(Hash) ? Array(page["rows"]) : []
++        rows.concat(batch)
++        total = page.is_a?(Hash) ? page["total"].to_i : rows.size
++
++        break if batch.size < EARN_PAGE_SIZE || rows.size >= total
++
++        current += 1
++      end
++
++      { "rows" => rows, "total" => rows.size, "pages" => raw_pages.size }
++    end
++
+     def signed_get(path, extra_params: {}, base_url: SPOT_BASE_URL)
++      signed_request(:get, path, extra_params: extra_params, base_url: base_url)
++    end
++
++    def signed_post(path, extra_params: {}, base_url: SPOT_BASE_URL)
++      signed_request(:post, path, extra_params: extra_params, base_url: base_url)
++    end
++
++    def signed_request(http_method, path, extra_params:, base_url:)
+       params = timestamp_params.merge(extra_params)
+       query_string = URI.encode_www_form(params.sort)
+ 
+-      response = self.class.get(
++      response = self.class.public_send(
++        http_method,
+         path,
+         base_uri: base_url,
+         query: "#{query_string}&signature=#{sign(query_string)}",
+@@ -180,7 +263,7 @@ class Provider::Binance
+         parsed
+       when 401
+         raise AuthenticationError, extract_error_message(parsed) || "Unauthorized"
+-      when 429
++      when 418, 429
+         raise RateLimitError, "Rate limit exceeded"
+       else
+         msg = extract_error_message(parsed) || "API error: #{response.code}"
+diff --git a/app/models/provider/binance_public.rb b/app/models/provider/binance_public.rb
+index a330a4cc..842d08b0 100644
+--- a/app/models/provider/binance_public.rb
++++ b/app/models/provider/binance_public.rb
+@@ -39,7 +39,7 @@ class Provider::BinancePublic < Provider
+   # the few stablecoin/USDT pairs that do exist (USDCUSDT, etc.) hover at ~1.0
+   # with sub-cent noise — synthesizing a flat 1.0 USD price is both accurate
+   # enough and avoids surfacing transient depeg ticks from market data.
+-  USD_STABLECOINS = %w[USDT USDC BUSD DAI FDUSD TUSD USDP PYUSD].freeze
++  USD_STABLECOINS = %w[USDT USDC BUSD DAI FDUSD TUSD USDP PYUSD BFUSD RWUSD].freeze
+ 
+   # Trailing separator between base and quote in a stored pair ticker
+   # ("BTC-USD", "BTC/USD", "BTC_USD"), stripped so parse_ticker builds a valid
 diff --git a/app/models/provider/llm_concept.rb b/app/models/provider/llm_concept.rb
 index 698bf13e..e67220b2 100644
 --- a/app/models/provider/llm_concept.rb
@@ -1169,12 +2071,57 @@ index 939e97c6..d060bc61 100644
              dimensions_mismatch: The embedding vector dimensions do not match the configured dimensions
              extension_not_enabled: The PostgreSQL vector extension is not enabled
              table_not_found: The vector_store_chunks table was not found
+diff --git a/config/locales/views/settings/en.yml b/config/locales/views/settings/en.yml
+index 941500da..711b038f 100644
+--- a/config/locales/views/settings/en.yml
++++ b/config/locales/views/settings/en.yml
+@@ -425,7 +425,7 @@ en:
+         mercury: Sync your Mercury business banking accounts automatically.
+         brex: Sync Brex cash and corporate card activity with read-only access.
+         coinbase: Import your Coinbase crypto holdings and track performance.
+-        binance: Sync your Binance spot balances using a read-only API key.
++        binance: Sync all supported Binance account balances using a read-only API key.
+         kraken: Sync Kraken balances and spot trade fills using a read-only API key.
+         onchain_wallet: Track self-custody Bitcoin, EVM and Solana wallets from their public addresses.
+         snaptrade: Connect brokerage accounts via the SnapTrade aggregation network.
+diff --git a/config/locales/views/settings/ru.yml b/config/locales/views/settings/ru.yml
+index 2104c799..956bc770 100644
+--- a/config/locales/views/settings/ru.yml
++++ b/config/locales/views/settings/ru.yml
+@@ -537,8 +537,8 @@ ru:
+       sync_provider_no_items: Нет доступных подключений для синхронизации.
+       taglines:
+         akahu: Синхронизация финансовых учреждений Новой Зеландии через Akahu.
+-        binance: Синхронизируйте ваши спотовые балансы Binance с использованием API-ключа
+-          только для чтения.
++        binance: Синхронизируйте балансы всех поддерживаемых счетов Binance
++          с помощью API-ключа только для чтения.
+         brex: Синхронизируйте активность наличных и корпоративных карт Brex с доступом
+           только для чтения.
+         coinbase: Импортируйте ваши криптоактивы Coinbase и отслеживайте производительность.
+diff --git a/config/schedule.yml b/config/schedule.yml
+index 11b61745..a7fdffc7 100644
+--- a/config/schedule.yml
++++ b/config/schedule.yml
+@@ -25,6 +25,12 @@ sync_hourly:
+   queue: "scheduled"
+   description: "Syncs provider items that opt-in to hourly syncing"
+ 
++sync_binance:
++  cron: "17 */4 * * *" # every four hours, staggered away from top-of-hour jobs
++  class: "SyncBinanceJob"
++  queue: "scheduled"
++  description: "Syncs every active Binance connection through the native read-only provider"
++
+ sync_property_valuations:
+   cron: "30 1 1 * *" # monthly on the 1st at 1:30 AM
+   class: "SyncPropertyValuationsJob"
 diff --git a/docs/UPSTREAM.md b/docs/UPSTREAM.md
 new file mode 100644
-index 00000000..8add5702
+index 00000000..27731d07
 --- /dev/null
 +++ b/docs/UPSTREAM.md
-@@ -0,0 +1,219 @@
+@@ -0,0 +1,241 @@
 +# Maintaining the Petrushin AI Sure fork
 +
 +This repository is a native GitHub fork of [`we-promise/sure`](https://github.com/we-promise/sure).
@@ -1269,6 +2216,23 @@ index 00000000..8add5702
 +  during every ordinary change and every upstream update.
 +- Retirement rule: keep while any downstream patch remains active.
 +
++### SURE-006 — Complete native Binance balance synchronization
++
++- Source: [`petrushin-ai/sure#6`](https://github.com/petrushin-ai/sure/pull/6)
++  and [`docs/hosting/binance.md`](hosting/binance.md); record the merge commit
++  here after merge.
++- Purpose: synchronize Spot, Funding, Cross/Isolated Margin, Simple Earn,
++  BFUSD/RWUSD, USDⓈ-M/COIN-M Futures, Options and Portfolio Margin directly
++  from Binance; exclude current positions worth less than `$1`; retain
++  unpriced or temporarily unavailable assets; surface per-source diagnostics;
++  and enqueue active connections every four hours without an external service.
++- Main conflict areas: `app/models/provider/binance.rb`, `app/models/binance_item*`,
++  `app/models/binance_account*`, `app/jobs/sync_binance_job.rb`,
++  `config/schedule.yml`, Binance tests and the hosting guide.
++- Retirement rule: remove only after upstream provides equivalent account-type
++  coverage, Portfolio Margin de-duplication, pagination, `$1` cutoff semantics,
++  partial-source retention/diagnostics, and native scheduled synchronization.
++
 +If upstream absorbs a patch, record the upstream PR and commit here, compare
 +behavior and tests, remove only the duplicated downstream implementation, and
 +regenerate the patch. Do not silently delete a ledger entry.
@@ -1348,6 +2312,11 @@ index 00000000..8add5702
 +  test/models/provider/anthropic/bank_statement_extractor_test.rb \
 +  test/models/ai_health/probe_test.rb \
 +  test/controllers/admin/system_health_controller_test.rb
++bin/rails test \
++  test/models/provider/binance_test.rb \
++  test/models/binance_item \
++  test/models/binance_account \
++  test/jobs/sync_binance_job_test.rb
 +bin/rails test:system TEST=test/system/admin/system_health_test.rb
 +bin/rubocop \
 +  app/models/ai_health.rb \
@@ -1394,6 +2363,85 @@ index 00000000..8add5702
 +- If an upstream update includes forward-only data migrations, use the
 +  verified pre-change backup rather than assuming an image-only rollback is
 +  sufficient.
+diff --git a/docs/hosting/binance.md b/docs/hosting/binance.md
+new file mode 100644
+index 00000000..fb7a7cd2
+--- /dev/null
++++ b/docs/hosting/binance.md
+@@ -0,0 +1,73 @@
++# Binance
++
++Sure connects directly to Binance with a read-only API key. No third-party
++aggregator or workflow service is involved.
++
++## Balance coverage
++
++Every sync reads the balance/equity endpoints for:
++
++- Spot;
++- Funding (P2P, Pay, Card and Gift Card);
++- Cross Margin and every Isolated Margin pair;
++- Simple Earn flexible and locked positions;
++- BFUSD and RWUSD yield accounts;
++- USDⓈ-M Futures and COIN-M Futures;
++- Options;
++- Portfolio Margin and Portfolio Margin Pro.
++
++Portfolio Margin is an aggregate account. When Binance returns a non-empty
++Portfolio Margin balance, Sure uses it instead of the overlapping Cross Margin,
++Futures and Options balances. This prevents the same equity from being counted
++twice.
++
++Products that are not enabled on the Binance account may reject their balance
++endpoint. Sure records each source status in the provider payload and under
++**Settings → Debug logs**. A temporary failure never turns the affected source
++into a zero balance: its last successful assets are kept until the source can be
++read again. A sync fails outright only when every balance source fails.
++
++## Minimum balance
++
++Sure omits a position when its current absolute USD value is less than `$1`.
++The boundary is inclusive: a position worth exactly `$1` remains visible.
++The cutoff is applied to current holdings only; it does not delete imported
++trade history.
++
++If Binance cannot quote an asset in USDT, BUSD or FDUSD during a sync, Sure
++uses its last successful quote and marks the price as stale. With no prior
++quote, Sure keeps the asset as unpriced instead of assuming it is worth zero
++and deleting it. The next sync retries the quote.
++
++## Schedule
++
++The native Sidekiq scheduler enqueues every active Binance connection every
++four hours, at minute 17. Manual **Sync now** remains available. The scheduled
++job uses the same sync pipeline, idempotency rules and debug logging as a manual
++sync.
++
++## API-key permissions
++
++Use a Binance API key with **Enable Reading** only. Do not enable trading,
++withdrawal, or universal-transfer permissions. If IP restrictions are enabled,
++allow the Sure server's egress IP.
++
++Only Binance products enabled for the owner of that API key can return data.
++Sub-accounts require their own connection unless their balances are exposed to
++the key by Binance.
++
++## Diagnostics
++
++The Binance provider payload records:
++
++- the raw response for every selected source;
++- `source_status` with `ok` or `unavailable` per source;
++- assets carried from a temporarily unavailable source;
++- positions excluded by the `$1` cutoff under `dust_omitted`;
++- assets with no current or stored USD quote under `unpriced_assets`;
++- the configured cutoff under `minimum_holding_usd`;
++- the fetch timestamp.
++
++Provider failures are also captured in **Settings → Debug logs** with the
++Binance connection id and unavailable source names. API keys and secrets are
++never included.
 diff --git a/test/controllers/admin/system_health_controller_test.rb b/test/controllers/admin/system_health_controller_test.rb
 index 5af9070d..f1b5e0a9 100644
 --- a/test/controllers/admin/system_health_controller_test.rb
@@ -1449,6 +2497,48 @@ index 5af9070d..f1b5e0a9 100644
  
      with_ai_environment(
        "OPENAI_ACCESS_TOKEN" => "sk-secret-openai",
+diff --git a/test/jobs/sync_binance_job_test.rb b/test/jobs/sync_binance_job_test.rb
+new file mode 100644
+index 00000000..0ed362e2
+--- /dev/null
++++ b/test/jobs/sync_binance_job_test.rb
+@@ -0,0 +1,36 @@
++require "test_helper"
++
++class SyncBinanceJobTest < ActiveJob::TestCase
++  test "syncs every active Binance connection" do
++    first = mock("first_binance_item")
++    second = mock("second_binance_item")
++    first.expects(:sync_later).once
++    second.expects(:sync_later).once
++
++    relation = mock("active_binance_items")
++    relation.stubs(:find_each).multiple_yields([ first ], [ second ])
++    BinanceItem.expects(:active).returns(relation)
++
++    SyncBinanceJob.perform_now
++  end
++
++  test "records an enqueue failure and continues" do
++    family = families(:dylan_family)
++    failing = stub(id: "failed-id", family: family)
++    failing.stubs(:sync_later).raises(StandardError, "queue unavailable")
++    success = mock("successful_binance_item")
++    success.expects(:sync_later).once
++
++    relation = mock("active_binance_items")
++    relation.stubs(:find_each).multiple_yields([ failing ], [ success ])
++    BinanceItem.expects(:active).returns(relation)
++
++    assert_difference "DebugLogEntry.count", 1 do
++      SyncBinanceJob.perform_now
++    end
++
++    entry = DebugLogEntry.order(:created_at).last
++    assert_equal "binance", entry.provider_key
++    assert_equal "failed-id", entry.metadata["binance_item_id"]
++  end
++end
 diff --git a/test/models/ai_health/probe_test.rb b/test/models/ai_health/probe_test.rb
 index 5e7430cd..c808a2c7 100644
 --- a/test/models/ai_health/probe_test.rb
@@ -1613,6 +2703,436 @@ index 5e7430cd..c808a2c7 100644
    test "failed LLM probe writes a system-wide debug entry and Rails log without secrets" do
      models = stub(list: { "data" => [ { "id" => "another-model" } ] })
      @probe.stubs(:openai_client).returns(stub(models: models))
+diff --git a/test/models/binance_item/coin_futures_importer_test.rb b/test/models/binance_item/coin_futures_importer_test.rb
+new file mode 100644
+index 00000000..1d72e544
+--- /dev/null
++++ b/test/models/binance_item/coin_futures_importer_test.rb
+@@ -0,0 +1,24 @@
++# frozen_string_literal: true
++
++require "test_helper"
++
++class BinanceItem::CoinFuturesImporterTest < ActiveSupport::TestCase
++  setup do
++    @provider = mock
++    @item = BinanceItem.create!(family: families(:dylan_family), name: "B", api_key: "k", api_secret: "s")
++  end
++
++  test "imports COIN-M margin equity" do
++    @provider.stubs(:get_coin_futures_account).returns({
++      "assets" => [
++        { "asset" => "BTC", "walletBalance" => "1", "unrealizedProfit" => "0.1", "marginBalance" => "1.1", "availableBalance" => "0.8" }
++      ]
++    })
++
++    result = BinanceItem::CoinFuturesImporter.new(@item, provider: @provider).import
++
++    assert_equal "coin_futures", result[:source]
++    assert_equal "1.1", result[:assets].first[:total]
++    assert_equal "0.8", result[:assets].first[:free]
++  end
++end
+diff --git a/test/models/binance_item/funding_importer_test.rb b/test/models/binance_item/funding_importer_test.rb
+new file mode 100644
+index 00000000..bb3150c5
+--- /dev/null
++++ b/test/models/binance_item/funding_importer_test.rb
+@@ -0,0 +1,24 @@
++# frozen_string_literal: true
++
++require "test_helper"
++
++class BinanceItem::FundingImporterTest < ActiveSupport::TestCase
++  setup do
++    @provider = mock
++    @item = BinanceItem.create!(family: families(:dylan_family), name: "B", api_key: "k", api_secret: "s")
++  end
++
++  test "imports every nonzero funding balance component" do
++    @provider.stubs(:get_funding_wallet).returns([
++      { "asset" => "USDT", "free" => "10", "locked" => "2", "freeze" => "3", "withdrawing" => "4" },
++      { "asset" => "BTC", "free" => "0", "locked" => "0", "freeze" => "0", "withdrawing" => "0" }
++    ])
++
++    result = BinanceItem::FundingImporter.new(@item, provider: @provider).import
++
++    assert_equal "funding", result[:source]
++    assert_equal 1, result[:assets].size
++    assert_equal "19.0", result[:assets].first[:total]
++    assert_equal "9.0", result[:assets].first[:locked]
++  end
++end
+diff --git a/test/models/binance_item/importer_test.rb b/test/models/binance_item/importer_test.rb
+index 88c0b47f..61e2a8a2 100644
+--- a/test/models/binance_item/importer_test.rb
++++ b/test/models/binance_item/importer_test.rb
+@@ -10,9 +10,15 @@ class BinanceItem::ImporterTest < ActiveSupport::TestCase
+     @provider.stubs(:get_spot_price).returns("50000.0")
+ 
+     stub_spot_result([ { symbol: "BTC", free: "1.0", locked: "0.0", total: "1.0" } ])
++    stub_funding_result([])
+     stub_margin_result([])
++    stub_isolated_margin_result([])
+     stub_earn_result([])
++    stub_yield_asset_result([])
+     stub_futures_result([])
++    stub_coin_futures_result([])
++    stub_options_result([])
++    stub_portfolio_margin_result(error: "not a portfolio margin account")
+   end
+ 
+   test "creates a binance_account of type combined" do
+@@ -45,11 +51,79 @@ class BinanceItem::ImporterTest < ActiveSupport::TestCase
+     assert_in_delta 1000.0, ba.current_balance.to_f, 0.01
+   end
+ 
++  test "omits current balances below one USD" do
++    stub_spot_result([
++      { symbol: "USDT", free: "0.99", locked: "0", total: "0.99" },
++      { symbol: "USDC", free: "1.00", locked: "0", total: "1.00" }
++    ])
++
++    BinanceItem::Importer.new(@item, binance_provider: @provider).import
++
++    assert_equal [ "USDC" ], payload_symbols
++    assert_equal BigDecimal("1"), @item.binance_accounts.first.current_balance
++    assert_equal "USDT", @item.binance_accounts.first.raw_payload["dust_omitted"].first["symbol"]
++  end
++
++  test "preserves an asset when its USD price is temporarily unavailable" do
++    @provider.stubs(:get_spot_price).returns(nil)
++
++    BinanceItem::Importer.new(@item, binance_provider: @provider).import
++
++    asset = payload_assets.first
++    assert_equal "BTC", asset["symbol"]
++    assert_nil asset["usd_value"]
++    assert_equal "unavailable", asset["price_status"]
++    assert_equal [ { "symbol" => "BTC", "source" => "spot" } ],
++                 @item.binance_accounts.first.raw_payload["unpriced_assets"]
++  end
++
++  test "retains the last successful quote when current pricing is unavailable" do
++    BinanceItem::Importer.new(@item, binance_provider: @provider).import
++
++    @provider.stubs(:get_spot_price).returns(nil)
++    BinanceItem::Importer.new(@item, binance_provider: @provider).import
++
++    asset = payload_assets.first
++    assert_equal "50000.0", asset["usd_price"]
++    assert_equal "50000.0", asset["usd_value"]
++    assert_equal "stale", asset["price_status"]
++    assert_empty @item.binance_accounts.first.raw_payload["unpriced_assets"]
++  end
++
++  test "rate limiting aborts the sync instead of probing more endpoints" do
++    BinanceItem::SpotImporter.any_instance.stubs(:import).raises(Provider::Binance::RateLimitError, "slow down")
++    BinanceItem::FundingImporter.any_instance.expects(:import).never
++
++    assert_raises Provider::Binance::RateLimitError do
++      BinanceItem::Importer.new(@item, binance_provider: @provider).import
++    end
++  end
++
++  test "portfolio margin replaces overlapping standalone sources" do
++    stub_portfolio_margin_result(
++      assets: [ { symbol: "USDT", free: "50", locked: "0", total: "50" } ]
++    )
++
++    BinanceItem::Importer.new(@item, binance_provider: @provider).import
++
++    raw = @item.binance_accounts.first.raw_payload
++    assert raw.key?("portfolio_margin")
++    refute raw.key?("margin")
++    refute raw.key?("futures")
++    refute raw.key?("coin_futures")
++    refute raw.key?("options")
++  end
++
+   test "skips BinanceAccount creation when all sources empty" do
+     stub_spot_result([])
++    stub_funding_result([])
+     stub_margin_result([])
++    stub_isolated_margin_result([])
+     stub_earn_result([])
++    stub_yield_asset_result([])
+     stub_futures_result([])
++    stub_coin_futures_result([])
++    stub_options_result([])
+ 
+     assert_no_difference "@item.binance_accounts.count" do
+       BinanceItem::Importer.new(@item, binance_provider: @provider).import
+@@ -63,9 +137,14 @@ class BinanceItem::ImporterTest < ActiveSupport::TestCase
+   # asset already sold came back on every sync.
+   test "a total outage is not an empty wallet" do
+     stub_failed_result("spot")
++    stub_failed_result("funding")
+     stub_failed_result("margin")
++    stub_failed_result("isolated_margin")
+     stub_failed_result("earn")
++    stub_failed_result("yield_assets")
+     stub_failed_result("futures")
++    stub_failed_result("coin_futures")
++    stub_failed_result("options")
+ 
+     assert_raises BinanceItem::Importer::AllRequestsFailed do
+       BinanceItem::Importer.new(@item, binance_provider: @provider).import
+@@ -153,9 +232,16 @@ class BinanceItem::ImporterTest < ActiveSupport::TestCase
+ 
+     ba = @item.binance_accounts.first
+     assert ba.raw_payload.key?("spot")
++    assert ba.raw_payload.key?("funding")
+     assert ba.raw_payload.key?("margin")
++    assert ba.raw_payload.key?("isolated_margin")
+     assert ba.raw_payload.key?("earn")
++    assert ba.raw_payload.key?("yield_assets")
+     assert ba.raw_payload.key?("futures")
++    assert ba.raw_payload.key?("coin_futures")
++    assert ba.raw_payload.key?("options")
++    assert_equal "1.0", ba.raw_payload["minimum_holding_usd"]
++    assert_equal "ok", ba.raw_payload.dig("source_status", "spot", "status")
+   end
+ 
+   private
+@@ -169,8 +255,17 @@ class BinanceItem::ImporterTest < ActiveSupport::TestCase
+     end
+ 
+     def stub_failed_result(source)
+-      klass = { "spot" => BinanceItem::SpotImporter, "margin" => BinanceItem::MarginImporter,
+-                "earn" => BinanceItem::EarnImporter, "futures" => BinanceItem::FuturesImporter }.fetch(source)
++      klass = {
++        "spot" => BinanceItem::SpotImporter,
++        "funding" => BinanceItem::FundingImporter,
++        "margin" => BinanceItem::MarginImporter,
++        "isolated_margin" => BinanceItem::IsolatedMarginImporter,
++        "earn" => BinanceItem::EarnImporter,
++        "yield_assets" => BinanceItem::YieldAssetImporter,
++        "futures" => BinanceItem::FuturesImporter,
++        "coin_futures" => BinanceItem::CoinFuturesImporter,
++        "options" => BinanceItem::OptionsImporter
++      }.fetch(source)
+       klass.any_instance.stubs(:import).returns(
+         { assets: [], raw: nil, source: source, error: "boom" }
+       )
+@@ -188,15 +283,51 @@ class BinanceItem::ImporterTest < ActiveSupport::TestCase
+       )
+     end
+ 
++    def stub_funding_result(assets)
++      BinanceItem::FundingImporter.any_instance.stubs(:import).returns(
++        { assets: assets, raw: {}, source: "funding" }
++      )
++    end
++
++    def stub_isolated_margin_result(assets)
++      BinanceItem::IsolatedMarginImporter.any_instance.stubs(:import).returns(
++        { assets: assets, raw: {}, source: "isolated_margin" }
++      )
++    end
++
+     def stub_earn_result(assets)
+       BinanceItem::EarnImporter.any_instance.stubs(:import).returns(
+         { assets: assets, raw: {}, source: "earn" }
+       )
+     end
+ 
++    def stub_yield_asset_result(assets)
++      BinanceItem::YieldAssetImporter.any_instance.stubs(:import).returns(
++        { assets: assets, raw: {}, source: "yield_assets" }
++      )
++    end
++
+     def stub_futures_result(assets)
+       BinanceItem::FuturesImporter.any_instance.stubs(:import).returns(
+         { assets: assets, raw: {}, source: "futures" }
+       )
+     end
++
++    def stub_coin_futures_result(assets)
++      BinanceItem::CoinFuturesImporter.any_instance.stubs(:import).returns(
++        { assets: assets, raw: {}, source: "coin_futures" }
++      )
++    end
++
++    def stub_options_result(assets)
++      BinanceItem::OptionsImporter.any_instance.stubs(:import).returns(
++        { assets: assets, raw: {}, source: "options" }
++      )
++    end
++
++    def stub_portfolio_margin_result(assets: [], error: nil)
++      result = { assets: assets, raw: {}, source: "portfolio_margin", aggregate: true }
++      result[:error] = error if error
++      BinanceItem::PortfolioMarginImporter.any_instance.stubs(:import).returns(result)
++    end
+ end
+diff --git a/test/models/binance_item/isolated_margin_importer_test.rb b/test/models/binance_item/isolated_margin_importer_test.rb
+new file mode 100644
+index 00000000..d6292068
+--- /dev/null
++++ b/test/models/binance_item/isolated_margin_importer_test.rb
+@@ -0,0 +1,28 @@
++# frozen_string_literal: true
++
++require "test_helper"
++
++class BinanceItem::IsolatedMarginImporterTest < ActiveSupport::TestCase
++  setup do
++    @provider = mock
++    @item = BinanceItem.create!(family: families(:dylan_family), name: "B", api_key: "k", api_secret: "s")
++  end
++
++  test "keeps each isolated pair as a distinct source" do
++    @provider.stubs(:get_isolated_margin_account).returns({
++      "assets" => [
++        {
++          "symbol" => "BTCUSDT",
++          "baseAsset" => { "asset" => "BTC", "free" => "0.1", "locked" => "0", "netAsset" => "0.09" },
++          "quoteAsset" => { "asset" => "USDT", "free" => "0", "locked" => "0", "netAsset" => "-100" }
++        }
++      ]
++    })
++
++    result = BinanceItem::IsolatedMarginImporter.new(@item, provider: @provider).import
++
++    assert_equal %w[BTC USDT], result[:assets].map { |asset| asset[:symbol] }
++    assert result[:assets].all? { |asset| asset[:source] == "isolated_margin:BTCUSDT" }
++    assert_equal "-100.0", result[:assets].last[:total]
++  end
++end
+diff --git a/test/models/binance_item/options_importer_test.rb b/test/models/binance_item/options_importer_test.rb
+new file mode 100644
+index 00000000..6440e880
+--- /dev/null
++++ b/test/models/binance_item/options_importer_test.rb
+@@ -0,0 +1,22 @@
++# frozen_string_literal: true
++
++require "test_helper"
++
++class BinanceItem::OptionsImporterTest < ActiveSupport::TestCase
++  setup do
++    @provider = mock
++    @item = BinanceItem.create!(family: families(:dylan_family), name: "B", api_key: "k", api_secret: "s")
++  end
++
++  test "imports standalone Options equity" do
++    @provider.stubs(:get_options_account).returns({
++      "asset" => [ { "asset" => "USDT", "equity" => "125", "available" => "100" } ]
++    })
++
++    result = BinanceItem::OptionsImporter.new(@item, provider: @provider).import
++
++    assert_equal "options", result[:source]
++    assert_equal "125.0", result[:assets].first[:total]
++    assert_equal "25.0", result[:assets].first[:locked]
++  end
++end
+diff --git a/test/models/binance_item/portfolio_margin_importer_test.rb b/test/models/binance_item/portfolio_margin_importer_test.rb
+new file mode 100644
+index 00000000..027fce59
+--- /dev/null
++++ b/test/models/binance_item/portfolio_margin_importer_test.rb
+@@ -0,0 +1,39 @@
++# frozen_string_literal: true
++
++require "test_helper"
++
++class BinanceItem::PortfolioMarginImporterTest < ActiveSupport::TestCase
++  setup do
++    @provider = mock
++    @item = BinanceItem.create!(family: families(:dylan_family), name: "B", api_key: "k", api_secret: "s")
++  end
++
++  test "prefers Portfolio Margin Pro and includes derivative equity" do
++    @provider.stubs(:get_portfolio_margin_pro_balance).returns([
++      {
++        "asset" => "USDT", "totalWalletBalance" => "100", "crossMarginFree" => "20",
++        "umWalletBalance" => "50", "umUnrealizedPNL" => "5",
++        "cmWalletBalance" => "10", "cmUnrealizedPNL" => "2",
++        "optionWalletBalance" => "20", "optionEquity" => "23"
++      }
++    ])
++    @provider.expects(:get_portfolio_margin_balance).never
++
++    result = BinanceItem::PortfolioMarginImporter.new(@item, provider: @provider).import
++
++    assert_equal "pro", result[:raw]["mode"]
++    assert_equal "110.0", result[:assets].first[:total]
++  end
++
++  test "falls back to classic Portfolio Margin" do
++    @provider.stubs(:get_portfolio_margin_pro_balance).raises(Provider::Binance::ApiError, "not pro")
++    @provider.stubs(:get_portfolio_margin_balance).returns([
++      { "asset" => "USDT", "totalWalletBalance" => "10", "umUnrealizedPNL" => "1", "cmUnrealizedPNL" => "2" }
++    ])
++
++    result = BinanceItem::PortfolioMarginImporter.new(@item, provider: @provider).import
++
++    assert_equal "classic", result[:raw]["mode"]
++    assert_equal "13.0", result[:assets].first[:total]
++  end
++end
+diff --git a/test/models/binance_item/spot_importer_test.rb b/test/models/binance_item/spot_importer_test.rb
+index 47520a9e..5a1cc193 100644
+--- a/test/models/binance_item/spot_importer_test.rb
++++ b/test/models/binance_item/spot_importer_test.rb
+@@ -28,14 +28,12 @@ class BinanceItem::SpotImporterTest < ActiveSupport::TestCase
+     assert_equal "2.0", btc[:total]
+   end
+ 
+-  test "returns empty assets on API error" do
++  test "propagates authentication errors so the sync stops immediately" do
+     @provider.stubs(:get_spot_account).raises(Provider::Binance::AuthenticationError, "Invalid key")
+ 
+-    result = BinanceItem::SpotImporter.new(@item, provider: @provider).import
+-
+-    assert_equal "spot", result[:source]
+-    assert_equal [], result[:assets]
+-    assert_nil result[:raw]
++    assert_raises Provider::Binance::AuthenticationError do
++      BinanceItem::SpotImporter.new(@item, provider: @provider).import
++    end
+   end
+ 
+   test "filters out zero-balance assets" do
+diff --git a/test/models/binance_item/yield_asset_importer_test.rb b/test/models/binance_item/yield_asset_importer_test.rb
+new file mode 100644
+index 00000000..69b8e60c
+--- /dev/null
++++ b/test/models/binance_item/yield_asset_importer_test.rb
+@@ -0,0 +1,30 @@
++# frozen_string_literal: true
++
++require "test_helper"
++
++class BinanceItem::YieldAssetImporterTest < ActiveSupport::TestCase
++  setup do
++    @provider = mock
++    @item = BinanceItem.create!(family: families(:dylan_family), name: "B", api_key: "k", api_secret: "s")
++  end
++
++  test "imports BFUSD and RWUSD accounts" do
++    @provider.stubs(:get_bfusd_account).returns({ "bfusdAmount" => "12.5", "usdtProfit" => "1" })
++    @provider.stubs(:get_rwusd_account).returns({ "rwusdAmount" => "7.5", "totalProfit" => "2" })
++
++    result = BinanceItem::YieldAssetImporter.new(@item, provider: @provider).import
++
++    assert_equal %w[BFUSD RWUSD], result[:assets].map { |asset| asset[:symbol] }
++    assert_equal %w[12.5 7.5], result[:assets].map { |asset| asset[:total] }
++  end
++
++  test "keeps one product when the other is unavailable" do
++    @provider.stubs(:get_bfusd_account).raises(Provider::Binance::ApiError, "not enabled")
++    @provider.stubs(:get_rwusd_account).returns({ "rwusdAmount" => "7.5" })
++
++    result = BinanceItem::YieldAssetImporter.new(@item, provider: @provider).import
++
++    assert_nil result[:error]
++    assert_equal [ "RWUSD" ], result[:assets].map { |asset| asset[:symbol] }
++  end
++end
 diff --git a/test/models/provider/anthropic/bank_statement_extractor_test.rb b/test/models/provider/anthropic/bank_statement_extractor_test.rb
 index 20324622..b2edbc25 100644
 --- a/test/models/provider/anthropic/bank_statement_extractor_test.rb
@@ -1751,6 +3271,77 @@ index 2b807d17..29af34d0 100644
    test "raises when pdf_content is blank" do
      err = assert_raises(Provider::Anthropic::Error) do
        Provider::Anthropic::PdfProcessor.new(
+diff --git a/test/models/provider/binance_test.rb b/test/models/provider/binance_test.rb
+index 3a502db8..297bb757 100644
+--- a/test/models/provider/binance_test.rb
++++ b/test/models/provider/binance_test.rb
+@@ -38,6 +38,66 @@ class Provider::BinanceTest < ActiveSupport::TestCase
+     end
+   end
+ 
++  test "handle_response raises RateLimitError on an IP ban" do
++    response = mock_httparty_response(418, {})
++    assert_raises(Provider::Binance::RateLimitError) do
++      @provider.send(:handle_response, response)
++    end
++  end
++
++  test "spot pricing propagates rate limiting" do
++    response = mock_httparty_response(429, {})
++    Provider::Binance.stubs(:get).returns(response)
++
++    assert_raises(Provider::Binance::RateLimitError) do
++      @provider.get_spot_price("BTCUSDT")
++    end
++  end
++
++  test "paginates all flexible Earn positions" do
++    first_page = { "rows" => Array.new(100) { |i| { "asset" => "A#{i}" } }, "total" => 101 }
++    second_page = { "rows" => [ { "asset" => "LAST" } ], "total" => 101 }
++
++    @provider.expects(:signed_get).with(
++      "/sapi/v1/simple-earn/flexible/position",
++      extra_params: { "current" => "1", "size" => "100" }
++    ).returns(first_page)
++    @provider.expects(:signed_get).with(
++      "/sapi/v1/simple-earn/flexible/position",
++      extra_params: { "current" => "2", "size" => "100" }
++    ).returns(second_page)
++
++    result = @provider.get_simple_earn_flexible
++
++    assert_equal 101, result["rows"].size
++    assert_equal 2, result["pages"]
++  end
++
++  test "funding wallet uses Binance read-only POST query" do
++    @provider.expects(:signed_post).with(
++      "/sapi/v1/asset/get-funding-asset",
++      extra_params: { "needBtcValuation" => "false" }
++    ).returns([])
++
++    assert_equal [], @provider.get_funding_wallet
++  end
++
++  test "uses the correct hosts for derivative account types" do
++    @provider.expects(:signed_get).with(
++      "/dapi/v1/account", base_url: Provider::Binance::COIN_FUTURES_BASE_URL
++    ).returns({})
++    @provider.expects(:signed_get).with(
++      "/eapi/v1/account", base_url: Provider::Binance::OPTIONS_BASE_URL
++    ).returns({})
++    @provider.expects(:signed_get).with(
++      "/papi/v1/balance", base_url: Provider::Binance::PORTFOLIO_MARGIN_BASE_URL
++    ).returns([])
++
++    @provider.get_coin_futures_account
++    @provider.get_options_account
++    @provider.get_portfolio_margin_balance
++  end
++
+   test "handle_response raises ApiError on other non-2xx" do
+     response = mock_httparty_response(403, { "msg" => "WAF Limit" })
+     assert_raises(Provider::Binance::ApiError) do
 diff --git a/test/models/provider/llm_concept_test.rb b/test/models/provider/llm_concept_test.rb
 new file mode 100644
 index 00000000..da583058

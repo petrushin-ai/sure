@@ -92,6 +92,23 @@ publish. A stale or non-applicable patch is a hard failure.
   during every ordinary change and every upstream update.
 - Retirement rule: keep while any downstream patch remains active.
 
+### SURE-006 — Complete native Binance balance synchronization
+
+- Source: [`petrushin-ai/sure#6`](https://github.com/petrushin-ai/sure/pull/6)
+  and [`docs/hosting/binance.md`](hosting/binance.md); record the merge commit
+  here after merge.
+- Purpose: synchronize Spot, Funding, Cross/Isolated Margin, Simple Earn,
+  BFUSD/RWUSD, USDⓈ-M/COIN-M Futures, Options and Portfolio Margin directly
+  from Binance; exclude current positions worth less than `$1`; retain
+  unpriced or temporarily unavailable assets; surface per-source diagnostics;
+  and enqueue active connections every four hours without an external service.
+- Main conflict areas: `app/models/provider/binance.rb`, `app/models/binance_item*`,
+  `app/models/binance_account*`, `app/jobs/sync_binance_job.rb`,
+  `config/schedule.yml`, Binance tests and the hosting guide.
+- Retirement rule: remove only after upstream provides equivalent account-type
+  coverage, Portfolio Margin de-duplication, pagination, `$1` cutoff semantics,
+  partial-source retention/diagnostics, and native scheduled synchronization.
+
 If upstream absorbs a patch, record the upstream PR and commit here, compare
 behavior and tests, remove only the duplicated downstream implementation, and
 regenerate the patch. Do not silently delete a ledger entry.
@@ -171,6 +188,11 @@ bin/rails test \
   test/models/provider/anthropic/bank_statement_extractor_test.rb \
   test/models/ai_health/probe_test.rb \
   test/controllers/admin/system_health_controller_test.rb
+bin/rails test \
+  test/models/provider/binance_test.rb \
+  test/models/binance_item \
+  test/models/binance_account \
+  test/jobs/sync_binance_job_test.rb
 bin/rails test:system TEST=test/system/admin/system_health_test.rb
 bin/rubocop \
   app/models/ai_health.rb \
