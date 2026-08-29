@@ -1,6 +1,8 @@
 class Provider::Openai::PdfProcessor
   include Provider::Openai::Concerns::UsageRecorder
 
+  OUTPUT_SCHEMA_NAME = "sure_pdf_document_analysis".freeze
+
   attr_reader :client, :model, :pdf_content, :custom_provider, :langfuse_trace, :family, :max_response_tokens,
               :processing_mode
 
@@ -82,6 +84,7 @@ class Provider::Openai::PdfProcessor
       - For statements with many transactions, provide a count rather than listing each one
       - Focus on providing actionable information that helps the user understand what they uploaded
       - If the document is unreadable or the PDF is corrupted, indicate this clearly
+      - Return every field in the response format; use null when an extracted value is unavailable
 
       Respond with ONLY valid JSON in this exact format (no markdown code blocks, no other text):
       {
@@ -124,7 +127,7 @@ class Provider::Openai::PdfProcessor
             content: "Please analyze the following document text and provide a structured summary:\n\n#{pdf_text}"
           }
         ],
-        response_format: { type: "json_object" }
+        response_format: response_format
       }
 
       response = client.chat(parameters: params)
@@ -172,7 +175,7 @@ class Provider::Openai::PdfProcessor
           type: "image_url",
           image_url: {
             url: "data:image/png;base64,#{img_base64}",
-            detail: "low"
+            detail: "high"
           }
         }
       end
@@ -181,7 +184,6 @@ class Provider::Openai::PdfProcessor
         text: "Please analyze this PDF document (#{images_base64.size} pages total, showing first #{[ images_base64.size, 5 ].min}) and respond with valid JSON only."
       }
 
-      # Note: response_format is not compatible with vision, so we ask for JSON in the prompt
       params = {
         model: effective_model,
         messages: [
@@ -189,6 +191,7 @@ class Provider::Openai::PdfProcessor
           { role: "user", content: content }
         ]
       }
+      params[:response_format] = response_format unless custom_provider
       params[custom_provider ? :max_tokens : :max_completion_tokens] = max_response_tokens
 
       response = client.chat(parameters: params)
@@ -235,11 +238,30 @@ class Provider::Openai::PdfProcessor
     end
 
     def build_result(parsed)
-      PdfProcessingResult.new(
+      result = PdfProcessingResult.new(
         summary: parsed["summary"],
         document_type: normalize_document_type(parsed["document_type"]),
         extracted_data: parsed["extracted_data"] || {}
       )
+
+      if !custom_provider && !Provider::LlmConcept.valid_pdf_processing_result?(result)
+        raise Provider::Openai::Error, "PDF processing response did not match Sure's schema"
+      end
+
+      result
+    end
+
+    def response_format
+      return { type: "json_object" } if custom_provider
+
+      {
+        type: "json_schema",
+        json_schema: {
+          name: OUTPUT_SCHEMA_NAME,
+          strict: true,
+          schema: Provider::LlmConcept.pdf_processing_json_schema
+        }
+      }
     end
 
     def normalize_document_type(doc_type)

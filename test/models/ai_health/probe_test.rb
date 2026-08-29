@@ -92,9 +92,7 @@ class AiHealth::ProbeTest < ActiveSupport::TestCase
             "content" => {
               document_type: "bank_statement",
               summary: "A synthetic bank statement containing no customer data.",
-              extracted_data: {
-                institution_name: AiHealth::Probe::PDF_TEST_INSTITUTION
-              }
+              extracted_data: AiHealth::Probe::PDF_TEST_EXPECTED_DATA
             }.to_json
           }
         }
@@ -132,9 +130,7 @@ class AiHealth::ProbeTest < ActiveSupport::TestCase
             "content" => {
               document_type: "bank_statement",
               summary: "A synthetic bank statement containing no customer data.",
-              extracted_data: {
-                institution_name: AiHealth::Probe::PDF_TEST_INSTITUTION
-              }
+              extracted_data: AiHealth::Probe::PDF_TEST_EXPECTED_DATA
             }.to_json
           }
         }
@@ -162,7 +158,7 @@ class AiHealth::ProbeTest < ActiveSupport::TestCase
     assert_not_includes instructions, AiHealth::Probe::PDF_TEST_INSTITUTION
   end
 
-  test "PDF processing probes require the expected institution in the standard result fields" do
+  test "PDF processing probes distinguish recognition mismatches from schema mismatches" do
     response = {
       "choices" => [
         {
@@ -170,7 +166,7 @@ class AiHealth::ProbeTest < ActiveSupport::TestCase
             "content" => {
               document_type: "bank_statement",
               summary: "A different bank statement.",
-              extracted_data: { institution_name: "Another Bank" }
+              extracted_data: AiHealth::Probe::PDF_TEST_EXPECTED_DATA.merge("institution_name" => "Another Bank")
             }.to_json
           }
         }
@@ -191,7 +187,38 @@ class AiHealth::ProbeTest < ActiveSupport::TestCase
     )
 
     assert result.failing?
-    assert_equal :invalid_response, result.failure_code
+    assert_equal :recognition_mismatch, result.failure_code
+  end
+
+  test "PDF processing probes report a schema mismatch for incomplete results" do
+    response = {
+      "choices" => [
+        {
+          "message" => {
+            "content" => {
+              document_type: "bank_statement",
+              summary: "An incomplete result.",
+              extracted_data: { institution_name: AiHealth::Probe::PDF_TEST_INSTITUTION }
+            }.to_json
+          }
+        }
+      ]
+    }
+    @probe.stubs(:openai_client).returns(stub(chat: response))
+    Provider::Openai::PdfProcessor.any_instance.stubs(:convert_pdf_to_images).returns([ "encoded-page" ])
+    Rails.logger.stubs(:error)
+    DebugLogEntry.stubs(:capture)
+
+    result = @probe.pdf_vision_processing(
+      provider: :openai,
+      endpoint: "https://api.cloudflare.example.test/v1",
+      access_token: "token",
+      model: "vision-model",
+      openai_compatible: true
+    )
+
+    assert result.failing?
+    assert_equal :schema_mismatch, result.failure_code
   end
 
   test "PDF vision probe sends the synthetic PDF as an Anthropic document block" do
@@ -200,9 +227,7 @@ class AiHealth::ProbeTest < ActiveSupport::TestCase
       {
         "document_type" => "bank_statement",
         "summary" => "A synthetic bank statement containing no customer data.",
-        "extracted_data" => {
-          "institution_name" => AiHealth::Probe::PDF_TEST_INSTITUTION
-        }
+        "extracted_data" => AiHealth::Probe::PDF_TEST_EXPECTED_DATA
       }
     )
     response = Struct.new(:content, :usage).new([ tool_use ], nil)
@@ -213,7 +238,7 @@ class AiHealth::ProbeTest < ActiveSupport::TestCase
       source[:media_type] == "application/pdf" &&
         Base64.strict_decode64(source[:data]) == @probe.send(:synthetic_pdf) &&
         extracted_data_schema[:properties].key?(:institution_name) &&
-        extracted_data_schema[:required].empty? &&
+        extracted_data_schema[:required] == Provider::LlmConcept::PDF_PROCESSING_EXTRACTED_DATA_KEYS &&
         !params[:system_].include?(AiHealth::Probe::PDF_TEST_INSTITUTION)
     end.returns(response)
     @probe.stubs(:anthropic_client).returns(stub(messages: messages))

@@ -83,42 +83,10 @@ class Provider::Anthropic::PdfProcessor
     end
 
     def output_tool
-      extracted_data_properties = {
-        institution_name: { type: [ "string", "null" ] },
-        statement_period_start: { type: [ "string", "null" ], pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "YYYY-MM-DD or null" },
-        statement_period_end: { type: [ "string", "null" ], pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "YYYY-MM-DD or null" },
-        transaction_count: { type: [ "integer", "null" ] },
-        opening_balance: { type: [ "number", "null" ] },
-        closing_balance: { type: [ "number", "null" ] },
-        currency: { type: [ "string", "null" ] },
-        account_holder: { type: [ "string", "null" ] }
-      }
-
       {
         name: TOOL_NAME,
         description: "Return the structured analysis of the attached document.",
-        input_schema: {
-          type: "object",
-          properties: {
-            document_type: {
-              type: "string",
-              enum: Import::DOCUMENT_TYPES,
-              description: "Classification of the document."
-            },
-            summary: {
-              type: "string",
-              description: "Concise human-readable summary of the document."
-            },
-            extracted_data: {
-              type: "object",
-              properties: extracted_data_properties,
-              required: [],
-              additionalProperties: false
-            }
-          },
-          required: [ "document_type", "summary", "extracted_data" ],
-          additionalProperties: false
-        }
+        input_schema: Provider::LlmConcept.pdf_processing_json_schema
       }
     end
 
@@ -153,11 +121,17 @@ class Provider::Anthropic::PdfProcessor
     end
 
     def build_result(parsed)
-      PdfProcessingResult.new(
+      result = PdfProcessingResult.new(
         summary: parsed["summary"] || parsed[:summary],
         document_type: normalize_document_type(parsed["document_type"] || parsed[:document_type]),
         extracted_data: parsed["extracted_data"] || parsed[:extracted_data] || {}
       )
+
+      unless Provider::LlmConcept.valid_pdf_processing_result?(result)
+        raise Provider::Anthropic::Error, "PDF processing response did not match Sure's schema"
+      end
+
+      result
     end
 
     def normalize_document_type(doc_type)

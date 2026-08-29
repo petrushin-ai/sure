@@ -97,11 +97,34 @@ class Provider::Openai::PdfProcessorTest < ActiveSupport::TestCase
     assert_equal expected, processor.process
   end
 
-  test "vision mode uses max_completion_tokens with OpenAI" do
+  test "text mode uses Sure's strict schema with OpenAI" do
     client = mock("openai_client")
     client.expects(:chat).with do |request|
       parameters = request[:parameters]
-      parameters[:max_completion_tokens] == 512 && !parameters.key?(:max_tokens)
+      structured_output?(parameters[:response_format])
+    end.returns(pdf_response)
+
+    processor = Provider::Openai::PdfProcessor.new(
+      client,
+      model: "gpt-5.6-terra",
+      pdf_content: @pdf_content,
+      max_response_tokens: 512,
+      processing_mode: :text
+    )
+    processor.stubs(:extract_text_from_pdf).returns("Synthetic document text")
+
+    assert_equal "Synthetic PDF", processor.process.summary
+  end
+
+  test "vision mode uses Sure's strict schema, high image detail, and max_completion_tokens with OpenAI" do
+    client = mock("openai_client")
+    client.expects(:chat).with do |request|
+      parameters = request[:parameters]
+      image = parameters.dig(:messages, 1, :content, 0, :image_url)
+      parameters[:max_completion_tokens] == 512 &&
+        !parameters.key?(:max_tokens) &&
+        image[:detail] == "high" &&
+        structured_output?(parameters[:response_format])
     end.returns(pdf_response)
 
     processor = vision_processor(client)
@@ -114,13 +137,28 @@ class Provider::Openai::PdfProcessorTest < ActiveSupport::TestCase
     client = mock("openai_client")
     client.expects(:chat).with do |request|
       parameters = request[:parameters]
-      parameters[:max_tokens] == 512 && !parameters.key?(:max_completion_tokens)
+      parameters[:max_tokens] == 512 &&
+        !parameters.key?(:max_completion_tokens) &&
+        !parameters.key?(:response_format)
     end.returns(pdf_response)
 
     processor = vision_processor(client, custom_provider: true)
     processor.stubs(:convert_pdf_to_images).returns([ "encoded-page" ])
 
     assert_equal "Synthetic PDF", processor.process.summary
+  end
+
+  test "official OpenAI rejects a response that does not match Sure's schema" do
+    client = stub(chat: {
+      "choices" => [
+        { "message" => { "content" => { document_type: "other", summary: "Incomplete", extracted_data: {} }.to_json } }
+      ]
+    })
+    processor = vision_processor(client)
+    processor.stubs(:convert_pdf_to_images).returns([ "encoded-page" ])
+
+    error = assert_raises(Provider::Openai::Error) { processor.process }
+    assert_match(/Sure's schema/, error.message)
   end
 
   private
@@ -143,12 +181,23 @@ class Provider::Openai::PdfProcessorTest < ActiveSupport::TestCase
               "content" => {
                 document_type: "other",
                 summary: "Synthetic PDF",
-                extracted_data: {}
+                extracted_data: empty_extracted_data
               }.to_json
             }
           }
         ]
       }
+    end
+
+    def empty_extracted_data
+      Provider::LlmConcept::PDF_PROCESSING_EXTRACTED_DATA_KEYS.index_with(nil)
+    end
+
+    def structured_output?(format)
+      format&.dig(:type) == "json_schema" &&
+        format.dig(:json_schema, :name) == Provider::Openai::PdfProcessor::OUTPUT_SCHEMA_NAME &&
+        format.dig(:json_schema, :strict) == true &&
+        format.dig(:json_schema, :schema) == Provider::LlmConcept.pdf_processing_json_schema
     end
 
     def build_processor(error, trace)
