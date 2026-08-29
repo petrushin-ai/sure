@@ -128,6 +128,39 @@ class InvestmentStatementTest < ActiveSupport::TestCase
     assert_equal 2, @statement.top_holdings(limit: 5).size
   end
 
+  test "dashboard_positions includes an Investment account with a balance but no holdings" do
+    account = create_investment_account(balance: 40_150, cash_balance: 40_150)
+    account.update!(name: "Edge Capital")
+    crypto = create_investment_account(balance: 10_000, cash_balance: 0)
+    security = Security.create!(ticker: "CRYPTO:BTC", name: "Bitcoin")
+    Holding.create!(
+      account: crypto, security: security, date: Date.current,
+      qty: 1, price: 10_000, amount: 10_000, currency: "USD"
+    )
+
+    positions = @statement.dashboard_positions(limit: 5)
+    account_position = positions.find(&:account_position?)
+
+    assert_equal "Edge Capital", positions.first.ticker
+    assert_equal account, account_position.account
+    assert_equal 40_150, account_position.amount_money.amount
+    assert_in_delta 80.06, account_position.weight, 0.01
+  end
+
+  test "dashboard_positions does not duplicate an Investment account that has holdings" do
+    account = create_investment_account(balance: 1_000, cash_balance: 0)
+    security = Security.create!(ticker: "TESTDASH", name: "Dashboard Security")
+    Holding.create!(
+      account: account, security: security, date: Date.current,
+      qty: 10, price: 100, amount: 1_000, currency: "USD"
+    )
+
+    positions = @statement.dashboard_positions(limit: 5)
+
+    assert_equal [ "TESTDASH" ], positions.map(&:ticker)
+    assert positions.none?(&:account_position?)
+  end
+
   test "allocation weights sum to 100% with mixed currencies" do
     usd_account = create_investment_account(balance: 2100, currency: "USD")
     eur_account = create_investment_account(balance: 2000, currency: "EUR")

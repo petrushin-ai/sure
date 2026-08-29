@@ -1657,10 +1657,10 @@ index 00000000..84b704cb
 +  end
 +end
 diff --git a/app/models/investment_statement.rb b/app/models/investment_statement.rb
-index 66c8d581..30515c19 100644
+index 66c8d581..9cf54b29 100644
 --- a/app/models/investment_statement.rb
 +++ b/app/models/investment_statement.rb
-@@ -90,34 +90,43 @@ class InvestmentStatement
+@@ -90,34 +90,55 @@ class InvestmentStatement
      end
    end
  
@@ -1690,6 +1690,18 @@ index 66c8d581..30515c19 100644
 -      .sort_by { |h| -convert_to_family_currency(h.amount, h.currency) }
 -      .first(limit)
 +    portfolio_holdings.first(limit)
++  end
++
++  # Dashboard positions include ordinary security holdings plus Investment
++  # accounts that only have a tracked account balance (for example, a manual
++  # fund valuation with no per-security Holding rows).  The latter already
++  # contribute to portfolio_value, so omitting them from the table made the
++  # visible weights stop well below 100% and hid the largest position.
++  #
++  # Keep this dashboard-specific: reports still describe security holdings and
++  # should not silently turn whole-account valuations into securities.
++  def dashboard_positions(limit: 5)
++    dashboard_portfolio_positions.first(limit)
    end
  
    # Portfolio allocation by security. Weights and amounts are computed in the
@@ -1724,7 +1736,7 @@ index 66c8d581..30515c19 100644
    end
  
    # Unrealized gains across all holdings, summed in family currency
-@@ -309,10 +318,75 @@ class InvestmentStatement
+@@ -309,10 +330,127 @@ class InvestmentStatement
  
      HoldingAllocation = Data.define(:security, :amount, :weight, :trend)
  
@@ -1734,9 +1746,35 @@ index 66c8d581..30515c19 100644
 +      def name
 +        security.name.presence || ticker
 +      end
++
++      def account_position?
++        false
++      end
 +    end
 +
 +    PortfolioBreakdown = Data.define(:account, :amount_money, :quantity)
++
++    AccountPosition = Data.define(:account, :amount_money, :weight) do
++      def ticker
++        account.name
++      end
++
++      def name
++        account.long_subtype_label
++      end
++
++      def trend
++        nil
++      end
++
++      def breakdowns
++        []
++      end
++
++      def account_position?
++        true
++      end
++    end
 +
      def investment_account_ids
        @investment_account_ids ||= investment_accounts.pluck(:id)
@@ -1745,6 +1783,32 @@ index 66c8d581..30515c19 100644
 +    def portfolio_group_key(holding)
 +      security = holding.security
 +      security.crypto? ? [ "crypto", security.crypto_base_asset || security.ticker ] : [ "security", security.id ]
++    end
++
++    def dashboard_portfolio_positions
++      @dashboard_portfolio_positions ||= begin
++        positions = portfolio_holdings + balance_only_account_positions
++        positions.sort_by { |position| -position.amount_money.amount }
++      end
++    end
++
++    def balance_only_account_positions
++      holding_account_ids = current_holdings.to_a.map(&:account_id).to_set
++      portfolio_total = portfolio_value
++
++      investment_accounts.filter_map do |account|
++        next unless account.accountable_type == "Investment"
++        next if holding_account_ids.include?(account.id)
++
++        amount = convert_to_family_currency(account.balance, account.currency)
++        next if amount.zero?
++
++        AccountPosition.new(
++          account: account,
++          amount_money: Money.new(amount, family.currency),
++          weight: portfolio_total.zero? ? 0 : (amount / portfolio_total * 100).round(2)
++        )
++      end
 +    end
 +
 +    def build_portfolio_holding(holdings, portfolio_total:)
@@ -4861,14 +4925,98 @@ index 00000000..9951fde4
 +    <% end %>
 +  <% end %>
 +<% end %>
+diff --git a/app/views/pages/dashboard/_investment_position_row.html.erb b/app/views/pages/dashboard/_investment_position_row.html.erb
+new file mode 100644
+index 00000000..58bc5166
+--- /dev/null
++++ b/app/views/pages/dashboard/_investment_position_row.html.erb
+@@ -0,0 +1,46 @@
++<%# locals: (holding:) %>
++
++<div class="min-w-64 flex-1 flex items-center gap-3">
++  <% if holding.account_position? %>
++    <%= render "accounts/logo", account: holding.account, size: "md", color: holding.account.accountable&.color %>
++  <% elsif holding.security.display_logo_url.present? %>
++    <img src="<%= holding.security.display_logo_url %>" alt="<%= holding.ticker %>" class="w-9 h-9 shrink-0 rounded-full">
++  <% else %>
++    <div class="w-9 h-9 shrink-0 rounded-full bg-container-inset flex items-center justify-center text-xs font-medium text-secondary">
++      <%= holding.ticker.to_s.first(2).presence || "—" %>
++    </div>
++  <% end %>
++
++  <div class="min-w-0">
++    <% if holding.account_position? %>
++      <%= link_to holding.ticker, account_path(holding.account), class: "block font-medium truncate hover:text-secondary" %>
++    <% else %>
++      <p class="font-medium truncate"><%= holding.ticker %></p>
++    <% end %>
++    <p class="text-xs text-secondary truncate"><%= holding.name %></p>
++  </div>
++
++  <% if holding.breakdowns.any? %>
++    <%= icon "chevron-down", size: "xs", class: "shrink-0 text-secondary transition-transform group-open:rotate-180" %>
++  <% end %>
++</div>
++
++<div class="ml-auto flex items-center gap-2 text-right">
++  <div class="w-20 shrink-0 text-secondary privacy-sensitive">
++    <%= number_to_percentage(holding.weight || 0, precision: 1) %>
++  </div>
++
++  <div class="w-24 shrink-0 privacy-sensitive whitespace-nowrap" data-investment-position-value>
++    <%= format_money(holding.amount_money) %>
++  </div>
++
++  <div class="w-20 shrink-0">
++    <% if holding.trend %>
++      <span class="privacy-sensitive" style="color: <%= holding.trend.color %>">
++        <%= holding.trend.percent_formatted %>
++      </span>
++    <% else %>
++      <span class="text-secondary">-</span>
++    <% end %>
++  </div>
++</div>
 diff --git a/app/views/pages/dashboard/_investment_summary.html.erb b/app/views/pages/dashboard/_investment_summary.html.erb
-index b38c2f90..8a74c2a9 100644
+index b38c2f90..be3dec80 100644
 --- a/app/views/pages/dashboard/_investment_summary.html.erb
 +++ b/app/views/pages/dashboard/_investment_summary.html.erb
-@@ -41,20 +41,38 @@
-           <tbody class="font-medium text-sm">
+@@ -25,59 +25,56 @@
+       </div>
+     </div>
+ 
+-    <% holdings = investment_statement.top_holdings(limit: 5) %>
++    <% holdings = investment_statement.dashboard_positions(limit: 5) %>
+     <% if holdings.any? %>
+-      <div class="bg-container-inset rounded-xl p-1 mx-4 overflow-x-auto">
+-        <div class="rounded-lg shadow-border-xs bg-container overflow-hidden">
+-        <table class="w-full">
+-          <thead class="bg-container-inset">
+-            <tr class="uppercase text-xs font-medium text-secondary">
+-              <th class="px-4 py-2 text-left font-medium"><%= t(".holding") %></th>
+-              <th class="px-4 py-2 text-right font-medium"><%= t(".weight") %></th>
+-              <th class="px-4 py-2 text-right font-medium"><%= t(".value") %></th>
+-              <th class="px-4 py-2 text-right font-medium"><%= t(".return") %></th>
+-            </tr>
+-          </thead>
+-          <tbody class="font-medium text-sm">
++      <%# Four financial columns must keep one stable grid. On narrow screens
++          the table scrolls horizontally rather than squeezing labels/values
++          into mismatched columns. This mirrors the Balance Sheet widget. %>
++      <div class="bg-container-inset rounded-xl p-1 mx-4 overflow-x-auto overscroll-x-contain" data-investment-scroll-container>
++        <div class="min-w-[42rem]">
++          <div class="px-4 py-2 flex items-center gap-4 uppercase text-xs font-medium text-secondary">
++            <div class="min-w-64 flex-1"><%= t(".holding") %></div>
++            <div class="ml-auto flex items-center gap-2 text-right">
++              <div class="w-20 shrink-0"><%= t(".weight") %></div>
++              <div class="w-24 shrink-0" data-investment-column="value"><%= t(".value") %></div>
++              <div class="w-20 shrink-0"><%= t(".return") %></div>
++            </div>
++          </div>
++
++          <div class="rounded-lg shadow-border-xs bg-container font-medium text-sm overflow-hidden">
              <% holdings.each_with_index do |holding, idx| %>
-               <tr class="<%= idx < holdings.size - 1 ? "table-divider" : "" %>">
+-              <tr class="<%= idx < holdings.size - 1 ? "table-divider" : "" %>">
 -                <td class="p-4">
 -                  <div class="flex items-center gap-3">
 -                    <% if holding.security.logo_url.present? %>
@@ -4876,46 +5024,67 @@ index b38c2f90..8a74c2a9 100644
 -                    <% else %>
 -                      <div class="w-8 h-8 rounded-full bg-container-inset flex items-center justify-center text-xs font-medium text-secondary">
 -                        <%= holding.ticker.to_s.first(2).presence || "—" %>
-+                <td class="p-4 align-top">
-+                  <details class="group" data-portfolio-ticker="<%= holding.ticker %>" <%= "open" if holding.breakdowns.one? %>>
-+                    <summary class="list-none [&::-webkit-details-marker]:hidden cursor-pointer">
-+                      <div class="flex items-center gap-3">
-+                        <% if holding.security.display_logo_url.present? %>
-+                          <img src="<%= holding.security.display_logo_url %>" alt="<%= holding.ticker %>" class="w-8 h-8 rounded-full">
-+                        <% else %>
-+                          <div class="w-8 h-8 rounded-full bg-container-inset flex items-center justify-center text-xs font-medium text-secondary">
-+                            <%= holding.ticker.to_s.first(2).presence || "—" %>
-+                          </div>
-+                        <% end %>
-+                        <div class="max-w-32 min-w-0">
-+                          <p class="font-medium truncate"><%= holding.ticker %></p>
-+                          <p class="text-xs text-secondary"><%= truncate(holding.name, length: 20) %></p>
-+                        </div>
-+                        <% if holding.breakdowns.any? %>
-+                          <%= icon "chevron-down", size: "xs", class: "text-secondary transition-transform group-open:rotate-180" %>
-+                        <% end %>
-+                      </div>
-+                    </summary>
++              <% row_classes = "p-4 flex items-center gap-4 #{idx < holdings.size - 1 ? "table-divider" : ""}" %>
 +
-+                    <% if holding.breakdowns.any? %>
-+                      <div class="mt-3 ml-11 space-y-2 text-xs">
-+                        <% holding.breakdowns.each do |breakdown| %>
-+                          <div class="flex items-center justify-between gap-3 text-secondary">
-+                            <span class="truncate"><%= breakdown.account.name %></span>
-+                            <span class="privacy-sensitive whitespace-nowrap"><%= format_money(breakdown.amount_money) %></span>
++              <% if holding.breakdowns.any? %>
++                <details class="group" data-portfolio-ticker="<%= holding.ticker %>" <%= "open" if holding.breakdowns.one? %>>
++                  <summary class="list-none [&::-webkit-details-marker]:hidden cursor-pointer <%= row_classes %>">
++                    <%= render "pages/dashboard/investment_position_row", holding: holding %>
++                  </summary>
++
++                  <div class="text-xs text-secondary">
++                    <% holding.breakdowns.each_with_index do |breakdown, breakdown_idx| %>
++                      <div class="pl-16 pr-4 py-3 flex items-center gap-4 <%= "table-divider" if breakdown_idx < holding.breakdowns.size - 1 %>">
++                        <div class="min-w-64 flex-1 truncate">
++                          <%= link_to breakdown.account.name, account_path(breakdown.account), class: "hover:text-primary" %>
++                        </div>
++                        <div class="ml-auto flex items-center gap-2 text-right">
++                          <div class="w-20 shrink-0" aria-hidden="true"></div>
++                          <div class="w-24 shrink-0 privacy-sensitive whitespace-nowrap" data-investment-breakdown-value>
++                            <%= format_money(breakdown.amount_money) %>
 +                          </div>
-+                        <% end %>
++                          <div class="w-20 shrink-0" aria-hidden="true"></div>
++                        </div>
                        </div>
                      <% end %>
 -                    <div class="max-w-32">
 -                      <p class="font-medium truncate"><%= holding.ticker %></p>
 -                      <p class="text-xs text-secondary"><%= truncate(holding.name, length: 20) %></p>
 -                    </div>
--                  </div>
-+                  </details>
-                 </td>
- 
-                 <td class="p-4 text-right text-secondary privacy-sensitive">
+                   </div>
+-                </td>
+-
+-                <td class="p-4 text-right text-secondary privacy-sensitive">
+-                  <%= number_to_percentage(holding.weight || 0, precision: 1) %>
+-                </td>
+-
+-                <td class="p-4 text-right privacy-sensitive">
+-                  <%= format_money(holding.amount_money) %>
+-                </td>
+-
+-                <td class="p-4 text-right">
+-                  <% if holding.trend %>
+-                    <span class="privacy-sensitive" style="color: <%= holding.trend.color %>">
+-                      <%= holding.trend.percent_formatted %>
+-                    </span>
+-                  <% else %>
+-                    <span class="text-secondary">-</span>
+-                  <% end %>
+-                </td>
+-              </tr>
++                </details>
++              <% else %>
++                <div class="<%= row_classes %>" data-investment-account-id="<%= holding.account.id if holding.account_position? %>">
++                  <%= render "pages/dashboard/investment_position_row", holding: holding %>
++                </div>
++              <% end %>
+             <% end %>
+-          </tbody>
+-        </table>
++          </div>
+         </div>
+       </div>
+     <% end %>
 diff --git a/app/views/settings/providers/_binance_panel.html.erb b/app/views/settings/providers/_binance_panel.html.erb
 index 1b329f16..f633a54e 100644
 --- a/app/views/settings/providers/_binance_panel.html.erb
@@ -6109,10 +6278,10 @@ index 40f62952..c7a14d5c 100644
    add_foreign_key "plaid_accounts", "plaid_items"
 diff --git a/docs/UPSTREAM.md b/docs/UPSTREAM.md
 new file mode 100644
-index 00000000..5a86a9de
+index 00000000..f3ec1362
 --- /dev/null
 +++ b/docs/UPSTREAM.md
-@@ -0,0 +1,399 @@
+@@ -0,0 +1,406 @@
 +# Maintaining the Petrushin AI Sure fork
 +
 +This repository is a native GitHub fork of [`we-promise/sure`](https://github.com/we-promise/sure).
@@ -6323,14 +6492,21 @@ index 00000000..5a86a9de
 +  exact Sure-account breakdown without encoding an institution into the
 +  ticker. Materialize one holding per asset inside each combined Binance/OKX
 +  account so Spot, Funding, Earn and other product rows add together instead
-+  of overwriting the same `(account, security, date, currency)` holding.
++  of overwriting the same `(account, security, date, currency)` holding. The
++  dashboard also represents Investment accounts that track only a whole-account
++  balance and have no per-security Holding rows, keeping the visible positions
++  consistent with the portfolio total. Its four financial columns use one
++  fixed-width grid with contained horizontal scrolling on narrow screens, and
++  account breakdown values stay aligned with the parent Value column.
 +- Main conflict areas: `Security#crypto?`, `InvestmentStatement` portfolio
 +  aggregation, the dashboard investment summary, Binance/OKX holdings
 +  processors, and their model/controller tests.
 +- Retirement rule: remove only after upstream groups provider-neutral crypto
 +  identities across accounts, preserves institution-level drill-down, uses a
-+  portfolio-level weight denominator, and materializes every combined exchange
-+  account without last-source-wins holding loss.
++  portfolio-level weight denominator, represents balance-only Investment
++  accounts, keeps parent/child financial columns aligned on narrow screens, and
++  materializes every combined exchange account without last-source-wins
++  holding loss.
 +
 +### SURE-012 — Read-only TON/GRAM wallets by public address
 +
@@ -7184,10 +7360,10 @@ index 587938ed..07b80330 100644
      item = create_onchain_wallet_item(family: @family)
  
 diff --git a/test/controllers/pages_controller_test.rb b/test/controllers/pages_controller_test.rb
-index 757cf922..636ef5e3 100644
+index 757cf922..a7eef03c 100644
 --- a/test/controllers/pages_controller_test.rb
 +++ b/test/controllers/pages_controller_test.rb
-@@ -14,6 +14,31 @@ class PagesControllerTest < ActionDispatch::IntegrationTest
+@@ -14,6 +14,52 @@ class PagesControllerTest < ActionDispatch::IntegrationTest
      assert_response :ok
    end
  
@@ -7211,8 +7387,29 @@ index 757cf922..636ef5e3 100644
 +    assert_response :ok
 +    assert_select "#investment-summary details[data-portfolio-ticker='CRYPTO:DASHAGG']", count: 1 do
 +      assert_select "summary", text: /CRYPTO:DASHAGG/
-+      assert_select "span", text: "Binance Dashboard"
-+      assert_select "span", text: "OKX Dashboard"
++      assert_select "a", text: "Binance Dashboard"
++      assert_select "a", text: "OKX Dashboard"
++    end
++  end
++
++  test "dashboard renders balance-only Investment accounts and aligned position columns" do
++    account = @family.accounts.create!(
++      owner: @user,
++      name: "Edge Capital Dashboard",
++      balance: 40_150,
++      cash_balance: 40_150,
++      currency: "USD",
++      accountable: Investment.new
++    )
++
++    get root_path
++
++    assert_response :ok
++    assert_select "#investment-summary [data-investment-scroll-container]", count: 1
++    assert_select "#investment-summary [data-investment-column='value']", text: /Value/i
++    assert_select "#investment-summary [data-investment-account-id='#{account.id}']", count: 1 do
++      assert_select "a", text: "Edge Capital Dashboard"
++      assert_select "[data-investment-position-value]", text: /\$40,150/
 +    end
 +  end
 +
@@ -8107,10 +8304,10 @@ index c9a03bf3..7cde1d6d 100644
      assert_equal I18n.t("binance_items.binance_item.sync_status.no_accounts"), @item.sync_status_summary
    end
 diff --git a/test/models/investment_statement_test.rb b/test/models/investment_statement_test.rb
-index 232eecc7..086587b1 100644
+index 232eecc7..905cced4 100644
 --- a/test/models/investment_statement_test.rb
 +++ b/test/models/investment_statement_test.rb
-@@ -87,6 +87,47 @@ class InvestmentStatementTest < ActiveSupport::TestCase
+@@ -87,6 +87,80 @@ class InvestmentStatementTest < ActiveSupport::TestCase
      assert_equal %w[ASML AAPL], top.map(&:ticker)
    end
  
@@ -8153,6 +8350,39 @@ index 232eecc7..086587b1 100644
 +    Holding.create!(account: london, security: london_security, date: Date.current, qty: 5, price: 100, amount: 500, currency: "USD")
 +
 +    assert_equal 2, @statement.top_holdings(limit: 5).size
++  end
++
++  test "dashboard_positions includes an Investment account with a balance but no holdings" do
++    account = create_investment_account(balance: 40_150, cash_balance: 40_150)
++    account.update!(name: "Edge Capital")
++    crypto = create_investment_account(balance: 10_000, cash_balance: 0)
++    security = Security.create!(ticker: "CRYPTO:BTC", name: "Bitcoin")
++    Holding.create!(
++      account: crypto, security: security, date: Date.current,
++      qty: 1, price: 10_000, amount: 10_000, currency: "USD"
++    )
++
++    positions = @statement.dashboard_positions(limit: 5)
++    account_position = positions.find(&:account_position?)
++
++    assert_equal "Edge Capital", positions.first.ticker
++    assert_equal account, account_position.account
++    assert_equal 40_150, account_position.amount_money.amount
++    assert_in_delta 80.06, account_position.weight, 0.01
++  end
++
++  test "dashboard_positions does not duplicate an Investment account that has holdings" do
++    account = create_investment_account(balance: 1_000, cash_balance: 0)
++    security = Security.create!(ticker: "TESTDASH", name: "Dashboard Security")
++    Holding.create!(
++      account: account, security: security, date: Date.current,
++      qty: 10, price: 100, amount: 1_000, currency: "USD"
++    )
++
++    positions = @statement.dashboard_positions(limit: 5)
++
++    assert_equal [ "TESTDASH" ], positions.map(&:ticker)
++    assert positions.none?(&:account_position?)
 +  end
 +
    test "allocation weights sum to 100% with mixed currencies" do
@@ -9450,6 +9680,62 @@ index 4b102dd4..c7721dcc 100644
        assert_text "Live checks passed"
      end
    end
+diff --git a/test/system/dashboard_investments_test.rb b/test/system/dashboard_investments_test.rb
+new file mode 100644
+index 00000000..f7e2950b
+--- /dev/null
++++ b/test/system/dashboard_investments_test.rb
+@@ -0,0 +1,50 @@
++require "application_system_test_case"
++
++class DashboardInvestmentsTest < ApplicationSystemTestCase
++  setup do
++    @user = users(:family_admin)
++    @family = @user.family
++    @account = @family.accounts.create!(
++      owner: @user,
++      name: "Edge Capital System",
++      balance: 40_150,
++      cash_balance: 40_150,
++      currency: "USD",
++      accountable: Investment.new
++    )
++
++    sign_in @user
++  end
++
++  test "mobile Investment widget scrolls internally and keeps values aligned" do
++    page.current_window.resize_to(390, 844)
++    visit root_path
++
++    find("#investment-summary [data-investment-scroll-container]")
++    find("#investment-summary [data-investment-account-id='#{@account.id}']")
++
++    geometry = page.evaluate_script(<<~JS)
++      (() => {
++        const scrollContainer = document.querySelector("#investment-summary [data-investment-scroll-container]")
++        const valueHeader = document.querySelector("#investment-summary [data-investment-column='value']")
++        const accountValue = document.querySelector("#investment-summary [data-investment-account-id='#{@account.id}'] [data-investment-position-value]")
++        const headerRect = valueHeader.getBoundingClientRect()
++        const valueRect = accountValue.getBoundingClientRect()
++
++        return {
++          internalOverflow: scrollContainer.scrollWidth > scrollContainer.clientWidth,
++          pageOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
++          valueCenterDelta: Math.abs(
++            (headerRect.left + headerRect.width / 2) - (valueRect.left + valueRect.width / 2)
++          )
++        }
++      })()
++    JS
++
++    assert geometry.fetch("internalOverflow")
++    assert_not geometry.fetch("pageOverflow")
++    assert_operator geometry.fetch("valueCenterDelta"), :<=, 1
++  ensure
++    reset_viewport
++  end
++end
 diff --git a/test/system/onchain_wallets_test.rb b/test/system/onchain_wallets_test.rb
 index b3f27b04..ae37e568 100644
 --- a/test/system/onchain_wallets_test.rb

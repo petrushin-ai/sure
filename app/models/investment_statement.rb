@@ -113,6 +113,18 @@ class InvestmentStatement
     portfolio_holdings.first(limit)
   end
 
+  # Dashboard positions include ordinary security holdings plus Investment
+  # accounts that only have a tracked account balance (for example, a manual
+  # fund valuation with no per-security Holding rows).  The latter already
+  # contribute to portfolio_value, so omitting them from the table made the
+  # visible weights stop well below 100% and hid the largest position.
+  #
+  # Keep this dashboard-specific: reports still describe security holdings and
+  # should not silently turn whole-account valuations into securities.
+  def dashboard_positions(limit: 5)
+    dashboard_portfolio_positions.first(limit)
+  end
+
   # Portfolio allocation by security. Weights and amounts are computed in the
   # family's currency so cross-currency holdings compare correctly.
   def allocation
@@ -324,9 +336,35 @@ class InvestmentStatement
       def name
         security.name.presence || ticker
       end
+
+      def account_position?
+        false
+      end
     end
 
     PortfolioBreakdown = Data.define(:account, :amount_money, :quantity)
+
+    AccountPosition = Data.define(:account, :amount_money, :weight) do
+      def ticker
+        account.name
+      end
+
+      def name
+        account.long_subtype_label
+      end
+
+      def trend
+        nil
+      end
+
+      def breakdowns
+        []
+      end
+
+      def account_position?
+        true
+      end
+    end
 
     def investment_account_ids
       @investment_account_ids ||= investment_accounts.pluck(:id)
@@ -335,6 +373,32 @@ class InvestmentStatement
     def portfolio_group_key(holding)
       security = holding.security
       security.crypto? ? [ "crypto", security.crypto_base_asset || security.ticker ] : [ "security", security.id ]
+    end
+
+    def dashboard_portfolio_positions
+      @dashboard_portfolio_positions ||= begin
+        positions = portfolio_holdings + balance_only_account_positions
+        positions.sort_by { |position| -position.amount_money.amount }
+      end
+    end
+
+    def balance_only_account_positions
+      holding_account_ids = current_holdings.to_a.map(&:account_id).to_set
+      portfolio_total = portfolio_value
+
+      investment_accounts.filter_map do |account|
+        next unless account.accountable_type == "Investment"
+        next if holding_account_ids.include?(account.id)
+
+        amount = convert_to_family_currency(account.balance, account.currency)
+        next if amount.zero?
+
+        AccountPosition.new(
+          account: account,
+          amount_money: Money.new(amount, family.currency),
+          weight: portfolio_total.zero? ? 0 : (amount / portfolio_total * 100).round(2)
+        )
+      end
     end
 
     def build_portfolio_holding(holdings, portfolio_total:)

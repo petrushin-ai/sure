@@ -208,14 +208,21 @@ image publish. A stale or non-applicable patch is a hard failure.
   exact Sure-account breakdown without encoding an institution into the
   ticker. Materialize one holding per asset inside each combined Binance/OKX
   account so Spot, Funding, Earn and other product rows add together instead
-  of overwriting the same `(account, security, date, currency)` holding.
+  of overwriting the same `(account, security, date, currency)` holding. The
+  dashboard also represents Investment accounts that track only a whole-account
+  balance and have no per-security Holding rows, keeping the visible positions
+  consistent with the portfolio total. Its four financial columns use one
+  fixed-width grid with contained horizontal scrolling on narrow screens, and
+  account breakdown values stay aligned with the parent Value column.
 - Main conflict areas: `Security#crypto?`, `InvestmentStatement` portfolio
   aggregation, the dashboard investment summary, Binance/OKX holdings
   processors, and their model/controller tests.
 - Retirement rule: remove only after upstream groups provider-neutral crypto
   identities across accounts, preserves institution-level drill-down, uses a
-  portfolio-level weight denominator, and materializes every combined exchange
-  account without last-source-wins holding loss.
+  portfolio-level weight denominator, represents balance-only Investment
+  accounts, keeps parent/child financial columns aligned on narrow screens, and
+  materializes every combined exchange account without last-source-wins
+  holding loss.
 
 ### SURE-012 — Read-only TON/GRAM wallets by public address
 

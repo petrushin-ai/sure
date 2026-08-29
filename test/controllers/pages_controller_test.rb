@@ -34,8 +34,29 @@ class PagesControllerTest < ActionDispatch::IntegrationTest
     assert_response :ok
     assert_select "#investment-summary details[data-portfolio-ticker='CRYPTO:DASHAGG']", count: 1 do
       assert_select "summary", text: /CRYPTO:DASHAGG/
-      assert_select "span", text: "Binance Dashboard"
-      assert_select "span", text: "OKX Dashboard"
+      assert_select "a", text: "Binance Dashboard"
+      assert_select "a", text: "OKX Dashboard"
+    end
+  end
+
+  test "dashboard renders balance-only Investment accounts and aligned position columns" do
+    account = @family.accounts.create!(
+      owner: @user,
+      name: "Edge Capital Dashboard",
+      balance: 40_150,
+      cash_balance: 40_150,
+      currency: "USD",
+      accountable: Investment.new
+    )
+
+    get root_path
+
+    assert_response :ok
+    assert_select "#investment-summary [data-investment-scroll-container]", count: 1
+    assert_select "#investment-summary [data-investment-column='value']", text: /Value/i
+    assert_select "#investment-summary [data-investment-account-id='#{account.id}']", count: 1 do
+      assert_select "a", text: "Edge Capital Dashboard"
+      assert_select "[data-investment-position-value]", text: /\$40,150/
     end
   end
 

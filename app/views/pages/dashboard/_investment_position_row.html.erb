@@ -1,0 +1,46 @@
+<%# locals: (holding:) %>
+
+<div class="min-w-64 flex-1 flex items-center gap-3">
+  <% if holding.account_position? %>
+    <%= render "accounts/logo", account: holding.account, size: "md", color: holding.account.accountable&.color %>
+  <% elsif holding.security.display_logo_url.present? %>
+    <img src="<%= holding.security.display_logo_url %>" alt="<%= holding.ticker %>" class="w-9 h-9 shrink-0 rounded-full">
+  <% else %>
+    <div class="w-9 h-9 shrink-0 rounded-full bg-container-inset flex items-center justify-center text-xs font-medium text-secondary">
+      <%= holding.ticker.to_s.first(2).presence || "—" %>
+    </div>
+  <% end %>
+
+  <div class="min-w-0">
+    <% if holding.account_position? %>
+      <%= link_to holding.ticker, account_path(holding.account), class: "block font-medium truncate hover:text-secondary" %>
+    <% else %>
+      <p class="font-medium truncate"><%= holding.ticker %></p>
+    <% end %>
+    <p class="text-xs text-secondary truncate"><%= holding.name %></p>
+  </div>
+
+  <% if holding.breakdowns.any? %>
+    <%= icon "chevron-down", size: "xs", class: "shrink-0 text-secondary transition-transform group-open:rotate-180" %>
+  <% end %>
+</div>
+
+<div class="ml-auto flex items-center gap-2 text-right">
+  <div class="w-20 shrink-0 text-secondary privacy-sensitive">
+    <%= number_to_percentage(holding.weight || 0, precision: 1) %>
+  </div>
+
+  <div class="w-24 shrink-0 privacy-sensitive whitespace-nowrap" data-investment-position-value>
+    <%= format_money(holding.amount_money) %>
+  </div>
+
+  <div class="w-20 shrink-0">
+    <% if holding.trend %>
+      <span class="privacy-sensitive" style="color: <%= holding.trend.color %>">
+        <%= holding.trend.percent_formatted %>
+      </span>
+    <% else %>
+      <span class="text-secondary">-</span>
+    <% end %>
+  </div>
+</div>

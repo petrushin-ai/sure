@@ -25,77 +25,56 @@
       </div>
     </div>
 
-    <% holdings = investment_statement.top_holdings(limit: 5) %>
+    <% holdings = investment_statement.dashboard_positions(limit: 5) %>
     <% if holdings.any? %>
-      <div class="bg-container-inset rounded-xl p-1 mx-4 overflow-x-auto">
-        <div class="rounded-lg shadow-border-xs bg-container overflow-hidden">
-        <table class="w-full">
-          <thead class="bg-container-inset">
-            <tr class="uppercase text-xs font-medium text-secondary">
-              <th class="px-4 py-2 text-left font-medium"><%= t(".holding") %></th>
-              <th class="px-4 py-2 text-right font-medium"><%= t(".weight") %></th>
-              <th class="px-4 py-2 text-right font-medium"><%= t(".value") %></th>
-              <th class="px-4 py-2 text-right font-medium"><%= t(".return") %></th>
-            </tr>
-          </thead>
-          <tbody class="font-medium text-sm">
-            <% holdings.each_with_index do |holding, idx| %>
-              <tr class="<%= idx < holdings.size - 1 ? "table-divider" : "" %>">
-                <td class="p-4 align-top">
-                  <details class="group" data-portfolio-ticker="<%= holding.ticker %>" <%= "open" if holding.breakdowns.one? %>>
-                    <summary class="list-none [&::-webkit-details-marker]:hidden cursor-pointer">
-                      <div class="flex items-center gap-3">
-                        <% if holding.security.display_logo_url.present? %>
-                          <img src="<%= holding.security.display_logo_url %>" alt="<%= holding.ticker %>" class="w-8 h-8 rounded-full">
-                        <% else %>
-                          <div class="w-8 h-8 rounded-full bg-container-inset flex items-center justify-center text-xs font-medium text-secondary">
-                            <%= holding.ticker.to_s.first(2).presence || "—" %>
-                          </div>
-                        <% end %>
-                        <div class="max-w-32 min-w-0">
-                          <p class="font-medium truncate"><%= holding.ticker %></p>
-                          <p class="text-xs text-secondary"><%= truncate(holding.name, length: 20) %></p>
-                        </div>
-                        <% if holding.breakdowns.any? %>
-                          <%= icon "chevron-down", size: "xs", class: "text-secondary transition-transform group-open:rotate-180" %>
-                        <% end %>
-                      </div>
-                    </summary>
+      <%# Four financial columns must keep one stable grid. On narrow screens
+          the table scrolls horizontally rather than squeezing labels/values
+          into mismatched columns. This mirrors the Balance Sheet widget. %>
+      <div class="bg-container-inset rounded-xl p-1 mx-4 overflow-x-auto overscroll-x-contain" data-investment-scroll-container>
+        <div class="min-w-[42rem]">
+          <div class="px-4 py-2 flex items-center gap-4 uppercase text-xs font-medium text-secondary">
+            <div class="min-w-64 flex-1"><%= t(".holding") %></div>
+            <div class="ml-auto flex items-center gap-2 text-right">
+              <div class="w-20 shrink-0"><%= t(".weight") %></div>
+              <div class="w-24 shrink-0" data-investment-column="value"><%= t(".value") %></div>
+              <div class="w-20 shrink-0"><%= t(".return") %></div>
+            </div>
+          </div>
 
-                    <% if holding.breakdowns.any? %>
-                      <div class="mt-3 ml-11 space-y-2 text-xs">
-                        <% holding.breakdowns.each do |breakdown| %>
-                          <div class="flex items-center justify-between gap-3 text-secondary">
-                            <span class="truncate"><%= breakdown.account.name %></span>
-                            <span class="privacy-sensitive whitespace-nowrap"><%= format_money(breakdown.amount_money) %></span>
+          <div class="rounded-lg shadow-border-xs bg-container font-medium text-sm overflow-hidden">
+            <% holdings.each_with_index do |holding, idx| %>
+              <% row_classes = "p-4 flex items-center gap-4 #{idx < holdings.size - 1 ? "table-divider" : ""}" %>
+
+              <% if holding.breakdowns.any? %>
+                <details class="group" data-portfolio-ticker="<%= holding.ticker %>" <%= "open" if holding.breakdowns.one? %>>
+                  <summary class="list-none [&::-webkit-details-marker]:hidden cursor-pointer <%= row_classes %>">
+                    <%= render "pages/dashboard/investment_position_row", holding: holding %>
+                  </summary>
+
+                  <div class="text-xs text-secondary">
+                    <% holding.breakdowns.each_with_index do |breakdown, breakdown_idx| %>
+                      <div class="pl-16 pr-4 py-3 flex items-center gap-4 <%= "table-divider" if breakdown_idx < holding.breakdowns.size - 1 %>">
+                        <div class="min-w-64 flex-1 truncate">
+                          <%= link_to breakdown.account.name, account_path(breakdown.account), class: "hover:text-primary" %>
+                        </div>
+                        <div class="ml-auto flex items-center gap-2 text-right">
+                          <div class="w-20 shrink-0" aria-hidden="true"></div>
+                          <div class="w-24 shrink-0 privacy-sensitive whitespace-nowrap" data-investment-breakdown-value>
+                            <%= format_money(breakdown.amount_money) %>
                           </div>
-                        <% end %>
+                          <div class="w-20 shrink-0" aria-hidden="true"></div>
+                        </div>
                       </div>
                     <% end %>
-                  </details>
-                </td>
-
-                <td class="p-4 text-right text-secondary privacy-sensitive">
-                  <%= number_to_percentage(holding.weight || 0, precision: 1) %>
-                </td>
-
-                <td class="p-4 text-right privacy-sensitive">
-                  <%= format_money(holding.amount_money) %>
-                </td>
-
-                <td class="p-4 text-right">
-                  <% if holding.trend %>
-                    <span class="privacy-sensitive" style="color: <%= holding.trend.color %>">
-                      <%= holding.trend.percent_formatted %>
-                    </span>
-                  <% else %>
-                    <span class="text-secondary">-</span>
-                  <% end %>
-                </td>
-              </tr>
+                  </div>
+                </details>
+              <% else %>
+                <div class="<%= row_classes %>" data-investment-account-id="<%= holding.account.id if holding.account_position? %>">
+                  <%= render "pages/dashboard/investment_position_row", holding: holding %>
+                </div>
+              <% end %>
             <% end %>
-          </tbody>
-        </table>
+          </div>
         </div>
       </div>
     <% end %>
