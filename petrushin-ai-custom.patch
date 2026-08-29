@@ -73,6 +73,62 @@ index 3dc55594..d5bfb86e 100644
  ## Backstory
  
  The [Maybe Finance](https://github.com/maybe-finance/maybe) (archived/abandoned repo) team spent most of 2021–2022 building a full-featured personal finance and wealth management app. It even included an “Ask an Advisor” feature that connected users with a real CFP/CFA — all included with your subscription.
+diff --git a/app/assets/tailwind/date-picker-dark-mode.css b/app/assets/tailwind/date-picker-dark-mode.css
+index 2cf08288..09da54aa 100644
+--- a/app/assets/tailwind/date-picker-dark-mode.css
++++ b/app/assets/tailwind/date-picker-dark-mode.css
+@@ -6,6 +6,10 @@
+   dark mode to ensure proper visibility.
+ */
+ 
++[data-theme=dark] input[type="date"] {
++  color-scheme: dark;
++}
++
+ [data-theme=dark] input[type="date"]::-webkit-calendar-picker-indicator {
+   filter: invert(1);
+   cursor: pointer;
+diff --git a/app/controllers/accounts_controller.rb b/app/controllers/accounts_controller.rb
+index ad339581..782bcbda 100644
+--- a/app/controllers/accounts_controller.rb
++++ b/app/controllers/accounts_controller.rb
+@@ -32,6 +32,7 @@ class AccountsController < ApplicationController
+       family.onchain_wallet_items.ordered.includes(:accounts, onchain_wallet_accounts: { account_provider: :account })
+     )
+     @binance_items = visible_provider_items(family.binance_items.ordered.with_attached_logo.includes(:binance_accounts, :accounts))
++    @okx_items = visible_provider_items(family.okx_items.ordered.includes(:okx_accounts, :accounts))
+     @kraken_items = visible_provider_items(family.kraken_items.ordered.with_attached_logo.includes(:kraken_accounts, :accounts))
+     @questrade_items = visible_provider_items(family.questrade_items.ordered.with_attached_logo.includes(:accounts, questrade_accounts: :account_provider))
+     @wise_items = visible_provider_items(family.wise_items.ordered.includes(:wise_accounts, :accounts))
+@@ -350,6 +351,7 @@ class AccountsController < ApplicationController
+         @indexa_capital_items,
+         @sophtron_items,
+         @binance_items,
++        @okx_items,
+         @kraken_items,
+         @questrade_items,
+         @wise_items,
+@@ -589,6 +591,20 @@ class AccountsController < ApplicationController
+         @binance_unlinked_count_map[item.id] = count
+       end
+ 
++      # OKX sync stats
++      @okx_sync_stats_map = {}
++      @okx_unlinked_count_map = {}
++      @okx_items.each do |item|
++        latest_sync = item.latest_sync_record
++        @okx_sync_stats_map[item.id] = latest_sync&.sync_stats || {}
++
++        count = item.okx_accounts
++          .left_joins(:account_provider)
++          .where(account_providers: { id: nil })
++          .count
++        @okx_unlinked_count_map[item.id] = count
++      end
++
+       # Questrade sync stats and account counts
+       @questrade_sync_stats_map = {}
+       @questrade_account_counts_map = {}
 diff --git a/app/controllers/binance_items_controller.rb b/app/controllers/binance_items_controller.rb
 index 292d77cc..de08bbab 100644
 --- a/app/controllers/binance_items_controller.rb
@@ -2152,10 +2208,10 @@ index 00000000..c076da2f
 +end
 diff --git a/app/models/okx_item/sync_complete_event.rb b/app/models/okx_item/sync_complete_event.rb
 new file mode 100644
-index 00000000..c519511b
+index 00000000..d4f984a9
 --- /dev/null
 +++ b/app/models/okx_item/sync_complete_event.rb
-@@ -0,0 +1,10 @@
+@@ -0,0 +1,16 @@
 +class OkxItem::SyncCompleteEvent
 +  def initialize(okx_item)
 +    @okx_item = okx_item
@@ -2163,6 +2219,12 @@ index 00000000..c519511b
 +
 +  def broadcast
 +    @okx_item.accounts.each(&:broadcast_sync_complete)
++    @okx_item.broadcast_replace_to(
++      @okx_item.family,
++      target: "okx_item_#{@okx_item.id}",
++      partial: "okx_items/okx_item",
++      locals: { okx_item: @okx_item }
++    )
 +    @okx_item.family.broadcast_sync_complete
 +  end
 +end
@@ -3361,6 +3423,30 @@ index 8586eadf..e828693c 100644
      { key: "kraken", type: "KrakenItem", association: :kraken_items, accounts: :kraken_accounts },
      { key: "onchain_wallet", type: "OnchainWalletItem", association: :onchain_wallet_items, accounts: :onchain_wallet_accounts },
      { key: "coinstats", type: "CoinstatsItem", association: :coinstats_items, accounts: :coinstats_accounts },
+diff --git a/app/views/accounts/index.html.erb b/app/views/accounts/index.html.erb
+index 6d13fae0..0d435949 100644
+--- a/app/views/accounts/index.html.erb
++++ b/app/views/accounts/index.html.erb
+@@ -10,7 +10,7 @@
+   ) %>
+ <% end %>
+ 
+-<% if @manual_accounts.empty? && @plaid_items.empty? && @simplefin_items.empty? && @lunchflow_items.empty? && @redbark_items.empty? && @akahu_items.empty? && @up_items.empty? && @enable_banking_items.empty? && @coinstats_items.empty? && @coinbase_items.empty? && @mercury_items.empty? && @brex_items.empty? && @ibkr_items.empty? && @snaptrade_items.empty? && @indexa_capital_items.empty? && @sophtron_items.empty? && @binance_items.empty? && @kraken_items.empty? && @questrade_items.empty? && @wise_items.empty? && @onchain_wallet_items.empty? %>
++<% if @manual_accounts.empty? && @plaid_items.empty? && @simplefin_items.empty? && @lunchflow_items.empty? && @redbark_items.empty? && @akahu_items.empty? && @up_items.empty? && @enable_banking_items.empty? && @coinstats_items.empty? && @coinbase_items.empty? && @mercury_items.empty? && @brex_items.empty? && @ibkr_items.empty? && @snaptrade_items.empty? && @indexa_capital_items.empty? && @sophtron_items.empty? && @binance_items.empty? && @okx_items.empty? && @kraken_items.empty? && @questrade_items.empty? && @wise_items.empty? && @onchain_wallet_items.empty? %>
+   <%= render "empty" %>
+ <% else %>
+   <div class="space-y-2">
+@@ -76,6 +76,10 @@
+       <%= render @binance_items.sort_by(&:created_at) %>
+     <% end %>
+ 
++    <% if @okx_items.any? %>
++      <%= render @okx_items.sort_by(&:created_at) %>
++    <% end %>
++
+     <% if @kraken_items.any? %>
+       <%= render @kraken_items.sort_by(&:created_at) %>
+     <% end %>
 diff --git a/app/views/admin/system_health/_ai_status.html.erb b/app/views/admin/system_health/_ai_status.html.erb
 index 84ceb560..f646f881 100644
 --- a/app/views/admin/system_health/_ai_status.html.erb
@@ -3391,10 +3477,39 @@ index a980fca9..9ba5cfcb 100644
                      <span class="text-xs text-secondary"><%= t(".currently_linked_to", account_name: ba.current_account.name) %></span>
                    <% end %>
 diff --git a/app/views/binance_items/setup_accounts.html.erb b/app/views/binance_items/setup_accounts.html.erb
-index 323f2fb7..11a725cf 100644
+index 323f2fb7..72132ad9 100644
 --- a/app/views/binance_items/setup_accounts.html.erb
 +++ b/app/views/binance_items/setup_accounts.html.erb
-@@ -66,30 +66,43 @@
+@@ -9,7 +9,7 @@
+   <% end %>
+ 
+   <% dialog.with_body do %>
+-    <%= form_with url: complete_account_setup_binance_item_path(@binance_item),
++    <%= styled_form_with url: complete_account_setup_binance_item_path(@binance_item),
+                   method: :post,
+                   local: true,
+                   id: "binance-setup-form",
+@@ -35,14 +35,11 @@
+ 
+         <div class="bg-surface border border-primary p-4 rounded-lg space-y-3">
+           <p class="text-sm font-medium text-primary"><%= t(".historical_import") %></p>
+-          <div class="field">
+-            <%= form.label :sync_start_date, t("settings.providers.binance_panel.sync_start_date_label"), class: "label" %>
+-            <%= form.date_field :sync_start_date,
+-                                value: @binance_item.sync_start_date || (Date.current - 1.year),
+-                                max: Date.current,
+-                                class: "input" %>
+-            <p class="help-text mt-1 text-xs text-secondary"><%= t("settings.providers.binance_panel.sync_start_date_help") %></p>
+-          </div>
++          <%= form.date_field :sync_start_date,
++                              label: t("settings.providers.binance_panel.sync_start_date_label"),
++                              value: @binance_item.sync_start_date || (Date.current - 1.year),
++                              max: Date.current %>
++          <p class="mt-1 text-xs text-secondary"><%= t("settings.providers.binance_panel.sync_start_date_help") %></p>
+         </div>
+ 
+         <% if @binance_accounts.empty? %>
+@@ -66,30 +63,47 @@
  
              <div class="space-y-2 max-h-96 overflow-y-auto">
                <% @binance_accounts.each do |binance_account| %>
@@ -3446,27 +3561,150 @@ index 323f2fb7..11a725cf 100644
 +                    </div>
 +                  </label>
 +
-+                  <div class="field pl-8">
-+                    <%= label_tag "account_names_#{binance_account.id}", t(".account_name_label"), class: "label" %>
-+                    <%= text_field_tag "account_names[#{binance_account.id}]",
-+                                       binance_account.name,
-+                                       id: "account_names_#{binance_account.id}",
-+                                       class: "input",
-+                                       placeholder: @binance_item.name,
-+                                       autocomplete: "off" %>
-+                    <p class="help-text mt-1 text-xs text-secondary"><%= t(".account_name_help") %></p>
++                  <div class="pl-8 space-y-1">
++                    <div class="form-field">
++                      <div class="form-field__body">
++                        <%= label_tag "account_names_#{binance_account.id}", t(".account_name_label"), class: "form-field__label" %>
++                        <%= text_field_tag "account_names[#{binance_account.id}]",
++                                           binance_account.name,
++                                           id: "account_names_#{binance_account.id}",
++                                           class: "form-field__input",
++                                           placeholder: @binance_item.name,
++                                           autocomplete: "off" %>
++                      </div>
++                    </div>
++                    <p class="text-xs text-secondary"><%= t(".account_name_help") %></p>
                    </div>
 -                </label>
 +                </div>
                <% end %>
              </div>
            </div>
+diff --git a/app/views/okx_items/_okx_item.html.erb b/app/views/okx_items/_okx_item.html.erb
+new file mode 100644
+index 00000000..f8aa21c3
+--- /dev/null
++++ b/app/views/okx_items/_okx_item.html.erb
+@@ -0,0 +1,113 @@
++<%# locals: (okx_item:, unlinked_count: okx_item.unlinked_accounts_count) %>
++
++<%= tag.div id: dom_id(okx_item) do %>
++  <%= render DS::Disclosure.new(variant: :card, open: true) do |disclosure| %>
++    <% disclosure.with_summary_content do %>
++      <div class="flex items-center gap-2">
++        <%= icon "chevron-right", class: "group-open:rotate-90 motion-safe:transition-transform motion-safe:duration-150" %>
++
++        <div class="flex items-center justify-center h-8 w-8 rounded-full bg-container">
++          <%= icon "coins", size: "sm", class: "text-primary" %>
++        </div>
++
++        <div class="pl-1 text-sm flex-1">
++          <div class="flex items-center gap-2">
++            <%= tag.p okx_item.institution_display_name, class: "font-medium text-primary" %>
++            <% if okx_item.scheduled_for_deletion? %>
++              <p class="text-destructive text-sm animate-pulse"><%= t(".deletion_in_progress") %></p>
++            <% end %>
++          </div>
++          <p class="text-xs text-secondary"><%= t(".provider_name") %></p>
++          <% if okx_item.syncing? %>
++            <div class="text-secondary flex items-center gap-1">
++              <%= icon "loader", size: "sm", class: "animate-spin" %>
++              <%= tag.span t(".syncing") %>
++            </div>
++          <% elsif okx_item.requires_update? %>
++            <div class="text-warning flex items-center gap-1">
++              <%= icon "alert-triangle", size: "sm", color: "warning" %>
++              <%= tag.span t(".reconnect") %>
++            </div>
++          <% elsif okx_item.last_synced_at %>
++            <p class="text-secondary">
++              <%= t(".status_with_summary", timestamp: time_ago_in_words(okx_item.last_synced_at), summary: okx_item.sync_status_summary) %>
++            </p>
++          <% else %>
++            <p class="text-secondary"><%= t(".status_never") %></p>
++          <% end %>
++        </div>
++      </div>
++    <% end %>
++
++    <% if Current.user&.admin? %>
++      <div class="flex items-center justify-end gap-2 mt-2">
++        <% if okx_item.requires_update? %>
++          <%= render DS::Link.new(
++            text: t(".update_credentials"),
++            icon: "refresh-cw",
++            variant: "secondary",
++            href: settings_providers_path,
++            frame: "_top"
++          ) %>
++        <% else %>
++          <%= icon(
++            "refresh-cw",
++            as_button: true,
++            href: sync_okx_item_path(okx_item),
++            disabled: okx_item.syncing?
++          ) %>
++        <% end %>
++
++        <%= render DS::Menu.new do |menu| %>
++          <% if okx_item.unlinked_accounts_count > 0 %>
++            <% menu.with_item(
++              variant: "link",
++              text: t(".import_accounts_menu"),
++              icon: "plus",
++              href: setup_accounts_okx_item_path(okx_item),
++              frame: :modal
++            ) %>
++          <% end %>
++          <% menu.with_item(
++            variant: "button",
++            text: t(".delete"),
++            icon: "trash-2",
++            href: okx_item_path(okx_item),
++            method: :delete,
++            confirm: CustomConfirm.for_resource_deletion(okx_item.institution_display_name, high_severity: true)
++          ) %>
++        <% end %>
++      </div>
++    <% end %>
++
++    <% unless okx_item.scheduled_for_deletion? %>
++      <div class="space-y-4 mt-4">
++        <% if okx_item.accounts.any? %>
++          <%= render "accounts/index/account_groups", accounts: okx_item.accounts %>
++        <% end %>
++
++        <% stats = (@okx_sync_stats_map || {})[okx_item.id] || okx_item.syncs.ordered.first&.sync_stats || {} %>
++        <%= render ProviderSyncSummary.new(stats: stats, provider_item: okx_item) %>
++
++        <% if okx_item.unlinked_accounts_count > 0 %>
++          <div class="p-4 flex flex-col gap-3 items-center justify-center bg-surface border border-primary rounded-xl">
++            <p class="text-primary font-medium text-sm"><%= t(".setup_needed") %></p>
++            <p class="text-secondary text-sm text-center"><%= t(".setup_description") %></p>
++            <%= render DS::Link.new(
++              text: t(".setup_action"),
++              icon: "plus",
++              variant: "primary",
++              href: setup_accounts_okx_item_path(okx_item),
++              frame: :modal
++            ) %>
++          </div>
++        <% elsif okx_item.accounts.empty? && okx_item.okx_accounts.none? %>
++          <div class="p-4 flex flex-col gap-3 items-center justify-center">
++            <p class="text-primary font-medium text-sm"><%= t(".no_accounts_title") %></p>
++            <p class="text-secondary text-sm"><%= t(".no_accounts_message") %></p>
++          </div>
++        <% end %>
++      </div>
++    <% end %>
++  <% end %>
++<% end %>
 diff --git a/app/views/okx_items/setup_accounts.html.erb b/app/views/okx_items/setup_accounts.html.erb
 new file mode 100644
-index 00000000..6317f8c1
+index 00000000..9951fde4
 --- /dev/null
 +++ b/app/views/okx_items/setup_accounts.html.erb
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,32 @@
 +<% content_for :title, t(".title") %>
 +<%= render DS::Dialog.new do |dialog| %>
 +  <% dialog.with_header(title: t(".title")) %>
@@ -3484,7 +3722,12 @@ index 00000000..6317f8c1
 +            <span class="flex-1 text-primary"><%= okx_account.name %></span>
 +            <span class="text-secondary"><%= number_with_delimiter(okx_account.current_balance || 0) %> <%= okx_account.currency %></span>
 +          </label>
-+          <%= text_field_tag "account_names[#{okx_account.id}]", okx_account.name, class: "form-field__input", autocomplete: "off", aria: { label: t(".account_name_label") } %>
++          <div class="form-field">
++            <div class="form-field__body">
++              <%= label_tag "account_names_#{okx_account.id}", t(".account_name_label"), class: "form-field__label" %>
++              <%= text_field_tag "account_names[#{okx_account.id}]", okx_account.name, id: "account_names_#{okx_account.id}", class: "form-field__input", autocomplete: "off" %>
++            </div>
++          </div>
 +        </div>
 +      <% end %>
 +      <div class="flex gap-3">
@@ -4107,10 +4350,10 @@ index a10a6274..72a1c75e 100644
          many: Доступно %{count} счетов
 diff --git a/config/locales/views/okx_items/en.yml b/config/locales/views/okx_items/en.yml
 new file mode 100644
-index 00000000..d06b893c
+index 00000000..771477f7
 --- /dev/null
 +++ b/config/locales/views/okx_items/en.yml
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,77 @@
 +en:
 +  settings:
 +    providers:
@@ -4160,6 +4403,20 @@ index 00000000..d06b893c
 +      import_selected: Import selected
 +      cancel: Cancel
 +    okx_item:
++      provider_name: OKX
++      syncing: Syncing...
++      reconnect: Credentials need updating
++      deletion_in_progress: Deleting...
++      status_with_summary: "Last synced %{timestamp} ago - %{summary}"
++      status_never: Never synced
++      update_credentials: Update credentials
++      delete: Delete
++      no_accounts_title: No account found
++      no_accounts_message: Your OKX portfolio will appear here after syncing.
++      setup_needed: Account ready to import
++      setup_description: Choose the account name and history start date.
++      setup_action: Import Account
++      import_accounts_menu: Import Account
 +      sync_status:
 +        no_accounts: No balance-bearing account found yet
 +        all_synced:
@@ -4176,10 +4433,10 @@ index 00000000..d06b893c
 +        other: "%{count} accounts are ready to import"
 diff --git a/config/locales/views/okx_items/ru.yml b/config/locales/views/okx_items/ru.yml
 new file mode 100644
-index 00000000..05cb71bd
+index 00000000..ec58105f
 --- /dev/null
 +++ b/config/locales/views/okx_items/ru.yml
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,83 @@
 +ru:
 +  settings:
 +    providers:
@@ -4231,6 +4488,20 @@ index 00000000..05cb71bd
 +      import_selected: Импортировать
 +      cancel: Отмена
 +    okx_item:
++      provider_name: OKX
++      syncing: Синхронизация...
++      reconnect: Требуется обновить учётные данные
++      deletion_in_progress: Удаление...
++      status_with_summary: "Последняя синхронизация %{timestamp} назад — %{summary}"
++      status_never: Ещё не синхронизировалось
++      update_credentials: Обновить учётные данные
++      delete: Удалить
++      no_accounts_title: Счёт не найден
++      no_accounts_message: Портфель OKX появится здесь после синхронизации.
++      setup_needed: Счёт готов к импорту
++      setup_description: Выберите название счёта и начальную дату истории.
++      setup_action: Импортировать счёт
++      import_accounts_menu: Импортировать счёт
 +      sync_status:
 +        no_accounts: Счёт с балансом пока не найден
 +        all_synced:
@@ -4521,10 +4792,10 @@ index 40f62952..5c76ea91 100644
    add_foreign_key "plaid_accounts", "plaid_items"
 diff --git a/docs/UPSTREAM.md b/docs/UPSTREAM.md
 new file mode 100644
-index 00000000..9422c2e1
+index 00000000..854b5a1c
 --- /dev/null
 +++ b/docs/UPSTREAM.md
-@@ -0,0 +1,337 @@
+@@ -0,0 +1,342 @@
 +# Maintaining the Petrushin AI Sure fork
 +
 +This repository is a native GitHub fork of [`we-promise/sure`](https://github.com/we-promise/sure).
@@ -4714,10 +4985,15 @@ index 00000000..9422c2e1
 +  post-sync processing resolve every linked provider through this factory, so
 +  the OKX account model alone is insufficient and causes request-level render
 +  failures after a successful import.
-+- UI requirement: OKX account-setup date and account-name controls must use the
-+  Sure `StyledFormBuilder`/`form-field__input` design system so native date
-+  controls and modal inputs inherit dark-theme background, text and calendar
-+  indicator styling.
++- Accounts-index requirement: load and render `OkxItem` cards alongside the
++  other provider collections, include them in access filtering and sync
++  metadata preloading, and broadcast the card after sync. A linked
++  `OkxAccount` is otherwise valid in the database but invisible on `/accounts`.
++- UI requirement: both OKX and Binance account-setup date and account-name
++  controls must use the Sure `StyledFormBuilder`/`form-field`/
++  `form-field__input` design system. Dark theme must also set the native date
++  input `color-scheme` so the browser picker, field background, text and
++  calendar indicator remain legible.
 +
 +If upstream absorbs a patch, record the upstream PR and commit here, compare
 +behavior and tests, remove only the duplicated downstream implementation, and
@@ -5121,6 +5397,41 @@ index 00000000..37c75b13
 +   account name.
 +5. Confirm source diagnostics and compare the combined balance with OKX's
 +   account overview, accounting for positions below `$1`.
+diff --git a/test/controllers/accounts_controller_test.rb b/test/controllers/accounts_controller_test.rb
+index 66b3c0f0..c1fe65b5 100644
+--- a/test/controllers/accounts_controller_test.rb
++++ b/test/controllers/accounts_controller_test.rb
+@@ -22,6 +22,30 @@ class AccountsControllerTest < ActionDispatch::IntegrationTest
+     assert_select "##{dom_id(kraken_item)}"
+   end
+ 
++  test "index renders linked OKX items and accounts" do
++    okx_item = OkxItem.create!(
++      family: @user.family,
++      name: "OKX A",
++      api_key: "accounts-index-key",
++      api_secret: "accounts-index-secret",
++      passphrase: "accounts-index-passphrase"
++    )
++    okx_account = okx_item.okx_accounts.create!(
++      name: "OKX A",
++      account_type: "combined",
++      currency: "USD",
++      current_balance: 100
++    )
++    account = Account.create_from_okx_account(okx_account)
++    okx_account.ensure_account_provider!(account)
++
++    get accounts_url
++
++    assert_response :success
++    assert_select "##{dom_id(okx_item)}"
++    assert_select "##{dom_id(okx_item)}", text: /OKX A/
++  end
++
+   test "index renders on-chain wallet items" do
+     register_fake_chain!
+     item = create_onchain_wallet_item(family: @user.family)
 diff --git a/test/controllers/admin/system_health_controller_test.rb b/test/controllers/admin/system_health_controller_test.rb
 index 5af9070d..f1b5e0a9 100644
 --- a/test/controllers/admin/system_health_controller_test.rb
@@ -5177,10 +5488,10 @@ index 5af9070d..f1b5e0a9 100644
      with_ai_environment(
        "OPENAI_ACCESS_TOKEN" => "sk-secret-openai",
 diff --git a/test/controllers/binance_items_controller_test.rb b/test/controllers/binance_items_controller_test.rb
-index 45170542..d5f9e54a 100644
+index 45170542..febb2149 100644
 --- a/test/controllers/binance_items_controller_test.rb
 +++ b/test/controllers/binance_items_controller_test.rb
-@@ -29,6 +29,46 @@ class BinanceItemsControllerTest < ActionDispatch::IntegrationTest
+@@ -29,9 +29,60 @@ class BinanceItemsControllerTest < ActionDispatch::IntegrationTest
      assert_response :redirect
    end
  
@@ -5225,9 +5536,23 @@ index 45170542..d5f9e54a 100644
 +  end
 +
    test "should show setup_accounts page" do
++    binance_account = @binance_item.binance_accounts.create!(
++      name: "Spot Portfolio",
++      account_type: "combined",
++      currency: "USD",
++      current_balance: 1000.0
++    )
++
      get setup_accounts_binance_item_url(@binance_item)
++
      assert_response :success
-@@ -55,6 +95,24 @@ class BinanceItemsControllerTest < ActionDispatch::IntegrationTest
++    assert_select ".form-field input[type='date'].form-field__input[name='sync_start_date']", count: 1
++    assert_select ".form-field input.form-field__input[name='account_names[#{binance_account.id}]']", count: 1
++    assert_select "input.input", count: 0
+   end
+ 
+   test "complete_account_setup creates accounts for selected binance_accounts" do
+@@ -55,6 +106,24 @@ class BinanceItemsControllerTest < ActionDispatch::IntegrationTest
      assert_equal "Crypto", binance_account.current_account.accountable_type
    end
  
@@ -5254,7 +5579,7 @@ index 45170542..d5f9e54a 100644
        name: "Spot Portfolio",
 diff --git a/test/controllers/okx_items_controller_test.rb b/test/controllers/okx_items_controller_test.rb
 new file mode 100644
-index 00000000..accc8057
+index 00000000..b417c227
 --- /dev/null
 +++ b/test/controllers/okx_items_controller_test.rb
 @@ -0,0 +1,56 @@
@@ -5309,8 +5634,8 @@ index 00000000..accc8057
 +    get setup_accounts_okx_item_url(@item)
 +
 +    assert_response :success
-+    assert_select "input[type='date'].form-field__input[name='sync_start_date']", count: 1
-+    assert_select "input.form-field__input[name='account_names[#{okx_account.id}]']", count: 1
++    assert_select ".form-field input[type='date'].form-field__input[name='sync_start_date']", count: 1
++    assert_select ".form-field input.form-field__input[name='account_names[#{okx_account.id}]']", count: 1
 +    assert_select "input.input", count: 0
 +  end
 +end

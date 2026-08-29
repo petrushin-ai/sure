@@ -49,6 +49,20 @@ ru:
       import_selected: Импортировать
       cancel: Отмена
     okx_item:
+      provider_name: OKX
+      syncing: Синхронизация...
+      reconnect: Требуется обновить учётные данные
+      deletion_in_progress: Удаление...
+      status_with_summary: "Последняя синхронизация %{timestamp} назад — %{summary}"
+      status_never: Ещё не синхронизировалось
+      update_credentials: Обновить учётные данные
+      delete: Удалить
+      no_accounts_title: Счёт не найден
+      no_accounts_message: Портфель OKX появится здесь после синхронизации.
+      setup_needed: Счёт готов к импорту
+      setup_description: Выберите название счёта и начальную дату истории.
+      setup_action: Импортировать счёт
+      import_accounts_menu: Импортировать счёт
       sync_status:
         no_accounts: Счёт с балансом пока не найден
         all_synced:

@@ -15,7 +15,12 @@
             <span class="flex-1 text-primary"><%= okx_account.name %></span>
             <span class="text-secondary"><%= number_with_delimiter(okx_account.current_balance || 0) %> <%= okx_account.currency %></span>
           </label>
-          <%= text_field_tag "account_names[#{okx_account.id}]", okx_account.name, class: "form-field__input", autocomplete: "off", aria: { label: t(".account_name_label") } %>
+          <div class="form-field">
+            <div class="form-field__body">
+              <%= label_tag "account_names_#{okx_account.id}", t(".account_name_label"), class: "form-field__label" %>
+              <%= text_field_tag "account_names[#{okx_account.id}]", okx_account.name, id: "account_names_#{okx_account.id}", class: "form-field__input", autocomplete: "off" %>
+            </div>
+          </div>
         </div>
       <% end %>
       <div class="flex gap-3">

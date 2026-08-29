@@ -70,8 +70,19 @@ class BinanceItemsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "should show setup_accounts page" do
+    binance_account = @binance_item.binance_accounts.create!(
+      name: "Spot Portfolio",
+      account_type: "combined",
+      currency: "USD",
+      current_balance: 1000.0
+    )
+
     get setup_accounts_binance_item_url(@binance_item)
+
     assert_response :success
+    assert_select ".form-field input[type='date'].form-field__input[name='sync_start_date']", count: 1
+    assert_select ".form-field input.form-field__input[name='account_names[#{binance_account.id}]']", count: 1
+    assert_select "input.input", count: 0
   end
 
   test "complete_account_setup creates accounts for selected binance_accounts" do

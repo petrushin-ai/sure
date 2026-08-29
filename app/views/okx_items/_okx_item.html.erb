@@ -1,0 +1,113 @@
+<%# locals: (okx_item:, unlinked_count: okx_item.unlinked_accounts_count) %>
+
+<%= tag.div id: dom_id(okx_item) do %>
+  <%= render DS::Disclosure.new(variant: :card, open: true) do |disclosure| %>
+    <% disclosure.with_summary_content do %>
+      <div class="flex items-center gap-2">
+        <%= icon "chevron-right", class: "group-open:rotate-90 motion-safe:transition-transform motion-safe:duration-150" %>
+
+        <div class="flex items-center justify-center h-8 w-8 rounded-full bg-container">
+          <%= icon "coins", size: "sm", class: "text-primary" %>
+        </div>
+
+        <div class="pl-1 text-sm flex-1">
+          <div class="flex items-center gap-2">
+            <%= tag.p okx_item.institution_display_name, class: "font-medium text-primary" %>
+            <% if okx_item.scheduled_for_deletion? %>
+              <p class="text-destructive text-sm animate-pulse"><%= t(".deletion_in_progress") %></p>
+            <% end %>
+          </div>
+          <p class="text-xs text-secondary"><%= t(".provider_name") %></p>
+          <% if okx_item.syncing? %>
+            <div class="text-secondary flex items-center gap-1">
+              <%= icon "loader", size: "sm", class: "animate-spin" %>
+              <%= tag.span t(".syncing") %>
+            </div>
+          <% elsif okx_item.requires_update? %>
+            <div class="text-warning flex items-center gap-1">
+              <%= icon "alert-triangle", size: "sm", color: "warning" %>
+              <%= tag.span t(".reconnect") %>
+            </div>
+          <% elsif okx_item.last_synced_at %>
+            <p class="text-secondary">
+              <%= t(".status_with_summary", timestamp: time_ago_in_words(okx_item.last_synced_at), summary: okx_item.sync_status_summary) %>
+            </p>
+          <% else %>
+            <p class="text-secondary"><%= t(".status_never") %></p>
+          <% end %>
+        </div>
+      </div>
+    <% end %>
+
+    <% if Current.user&.admin? %>
+      <div class="flex items-center justify-end gap-2 mt-2">
+        <% if okx_item.requires_update? %>
+          <%= render DS::Link.new(
+            text: t(".update_credentials"),
+            icon: "refresh-cw",
+            variant: "secondary",
+            href: settings_providers_path,
+            frame: "_top"
+          ) %>
+        <% else %>
+          <%= icon(
+            "refresh-cw",
+            as_button: true,
+            href: sync_okx_item_path(okx_item),
+            disabled: okx_item.syncing?
+          ) %>
+        <% end %>
+
+        <%= render DS::Menu.new do |menu| %>
+          <% if okx_item.unlinked_accounts_count > 0 %>
+            <% menu.with_item(
+              variant: "link",
+              text: t(".import_accounts_menu"),
+              icon: "plus",
+              href: setup_accounts_okx_item_path(okx_item),
+              frame: :modal
+            ) %>
+          <% end %>
+          <% menu.with_item(
+            variant: "button",
+            text: t(".delete"),
+            icon: "trash-2",
+            href: okx_item_path(okx_item),
+            method: :delete,
+            confirm: CustomConfirm.for_resource_deletion(okx_item.institution_display_name, high_severity: true)
+          ) %>
+        <% end %>
+      </div>
+    <% end %>
+
+    <% unless okx_item.scheduled_for_deletion? %>
+      <div class="space-y-4 mt-4">
+        <% if okx_item.accounts.any? %>
+          <%= render "accounts/index/account_groups", accounts: okx_item.accounts %>
+        <% end %>
+
+        <% stats = (@okx_sync_stats_map || {})[okx_item.id] || okx_item.syncs.ordered.first&.sync_stats || {} %>
+        <%= render ProviderSyncSummary.new(stats: stats, provider_item: okx_item) %>
+
+        <% if okx_item.unlinked_accounts_count > 0 %>
+          <div class="p-4 flex flex-col gap-3 items-center justify-center bg-surface border border-primary rounded-xl">
+            <p class="text-primary font-medium text-sm"><%= t(".setup_needed") %></p>
+            <p class="text-secondary text-sm text-center"><%= t(".setup_description") %></p>
+            <%= render DS::Link.new(
+              text: t(".setup_action"),
+              icon: "plus",
+              variant: "primary",
+              href: setup_accounts_okx_item_path(okx_item),
+              frame: :modal
+            ) %>
+          </div>
+        <% elsif okx_item.accounts.empty? && okx_item.okx_accounts.none? %>
+          <div class="p-4 flex flex-col gap-3 items-center justify-center">
+            <p class="text-primary font-medium text-sm"><%= t(".no_accounts_title") %></p>
+            <p class="text-secondary text-sm"><%= t(".no_accounts_message") %></p>
+          </div>
+        <% end %>
+      </div>
+    <% end %>
+  <% end %>
+<% end %>

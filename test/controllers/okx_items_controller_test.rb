@@ -49,8 +49,8 @@ class OkxItemsControllerTest < ActionDispatch::IntegrationTest
     get setup_accounts_okx_item_url(@item)
 
     assert_response :success
-    assert_select "input[type='date'].form-field__input[name='sync_start_date']", count: 1
-    assert_select "input.form-field__input[name='account_names[#{okx_account.id}]']", count: 1
+    assert_select ".form-field input[type='date'].form-field__input[name='sync_start_date']", count: 1
+    assert_select ".form-field input.form-field__input[name='account_names[#{okx_account.id}]']", count: 1
     assert_select "input.input", count: 0
   end
 end

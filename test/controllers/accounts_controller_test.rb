@@ -22,6 +22,30 @@ class AccountsControllerTest < ActionDispatch::IntegrationTest
     assert_select "##{dom_id(kraken_item)}"
   end
 
+  test "index renders linked OKX items and accounts" do
+    okx_item = OkxItem.create!(
+      family: @user.family,
+      name: "OKX A",
+      api_key: "accounts-index-key",
+      api_secret: "accounts-index-secret",
+      passphrase: "accounts-index-passphrase"
+    )
+    okx_account = okx_item.okx_accounts.create!(
+      name: "OKX A",
+      account_type: "combined",
+      currency: "USD",
+      current_balance: 100
+    )
+    account = Account.create_from_okx_account(okx_account)
+    okx_account.ensure_account_provider!(account)
+
+    get accounts_url
+
+    assert_response :success
+    assert_select "##{dom_id(okx_item)}"
+    assert_select "##{dom_id(okx_item)}", text: /OKX A/
+  end
+
   test "index renders on-chain wallet items" do
     register_fake_chain!
     item = create_onchain_wallet_item(family: @user.family)

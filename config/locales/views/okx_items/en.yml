@@ -47,6 +47,20 @@ en:
       import_selected: Import selected
       cancel: Cancel
     okx_item:
+      provider_name: OKX
+      syncing: Syncing...
+      reconnect: Credentials need updating
+      deletion_in_progress: Deleting...
+      status_with_summary: "Last synced %{timestamp} ago - %{summary}"
+      status_never: Never synced
+      update_credentials: Update credentials
+      delete: Delete
+      no_accounts_title: No account found
+      no_accounts_message: Your OKX portfolio will appear here after syncing.
+      setup_needed: Account ready to import
+      setup_description: Choose the account name and history start date.
+      setup_action: Import Account
+      import_accounts_menu: Import Account
       sync_status:
         no_accounts: No balance-bearing account found yet
         all_synced:

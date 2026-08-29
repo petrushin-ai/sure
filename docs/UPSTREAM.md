@@ -187,10 +187,15 @@ image publish. A stale or non-applicable patch is a hard failure.
   post-sync processing resolve every linked provider through this factory, so
   the OKX account model alone is insufficient and causes request-level render
   failures after a successful import.
-- UI requirement: OKX account-setup date and account-name controls must use the
-  Sure `StyledFormBuilder`/`form-field__input` design system so native date
-  controls and modal inputs inherit dark-theme background, text and calendar
-  indicator styling.
+- Accounts-index requirement: load and render `OkxItem` cards alongside the
+  other provider collections, include them in access filtering and sync
+  metadata preloading, and broadcast the card after sync. A linked
+  `OkxAccount` is otherwise valid in the database but invisible on `/accounts`.
+- UI requirement: both OKX and Binance account-setup date and account-name
+  controls must use the Sure `StyledFormBuilder`/`form-field`/
+  `form-field__input` design system. Dark theme must also set the native date
+  input `color-scheme` so the browser picker, field background, text and
+  calendar indicator remain legible.
 
 If upstream absorbs a patch, record the upstream PR and commit here, compare
 behavior and tests, remove only the duplicated downstream implementation, and

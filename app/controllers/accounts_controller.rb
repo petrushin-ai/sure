@@ -32,6 +32,7 @@ class AccountsController < ApplicationController
       family.onchain_wallet_items.ordered.includes(:accounts, onchain_wallet_accounts: { account_provider: :account })
     )
     @binance_items = visible_provider_items(family.binance_items.ordered.with_attached_logo.includes(:binance_accounts, :accounts))
+    @okx_items = visible_provider_items(family.okx_items.ordered.includes(:okx_accounts, :accounts))
     @kraken_items = visible_provider_items(family.kraken_items.ordered.with_attached_logo.includes(:kraken_accounts, :accounts))
     @questrade_items = visible_provider_items(family.questrade_items.ordered.with_attached_logo.includes(:accounts, questrade_accounts: :account_provider))
     @wise_items = visible_provider_items(family.wise_items.ordered.includes(:wise_accounts, :accounts))
@@ -350,6 +351,7 @@ class AccountsController < ApplicationController
         @indexa_capital_items,
         @sophtron_items,
         @binance_items,
+        @okx_items,
         @kraken_items,
         @questrade_items,
         @wise_items,
@@ -587,6 +589,20 @@ class AccountsController < ApplicationController
           .where(account_providers: { id: nil })
           .count
         @binance_unlinked_count_map[item.id] = count
+      end
+
+      # OKX sync stats
+      @okx_sync_stats_map = {}
+      @okx_unlinked_count_map = {}
+      @okx_items.each do |item|
+        latest_sync = item.latest_sync_record
+        @okx_sync_stats_map[item.id] = latest_sync&.sync_stats || {}
+
+        count = item.okx_accounts
+          .left_joins(:account_provider)
+          .where(account_providers: { id: nil })
+          .count
+        @okx_unlinked_count_map[item.id] = count
       end
 
       # Questrade sync stats and account counts
