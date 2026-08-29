@@ -16,3 +16,7 @@ bin/* text eol=lf
 *.sh text eol=lf
 *.rb text eol=lf
 .devcontainer/.bashrc text eol=lf
+
+# The generated aggregate patch preserves source hunks verbatim, including
+# whitespace markers that must not be interpreted as whitespace in this file.
+petrushin-ai-custom.patch -whitespace

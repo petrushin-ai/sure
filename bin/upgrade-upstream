@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+target_ref="${1:-}"
+if [[ -z "$target_ref" ]]; then
+  printf 'Usage: bin/upgrade-upstream <upstream-ref>\n' >&2
+  printf 'Example: bin/upgrade-upstream upstream/main\n' >&2
+  exit 1
+fi
+
+readonly repo_root="$(git rev-parse --show-toplevel)"
+readonly patch_file="$repo_root/petrushin-ai-custom.patch"
+readonly upstream_marker="$repo_root/.upstream-commit"
+
+if [[ ! -s "$patch_file" || ! -s "$upstream_marker" ]]; then
+  printf 'The downstream patch and upstream marker must both exist before an upgrade.\n' >&2
+  exit 1
+fi
+
+if [[ -n "$(git status --porcelain)" ]]; then
+  printf 'Working tree is not clean. Commit or stash changes first.\n' >&2
+  exit 1
+fi
+
+if ! git remote get-url upstream >/dev/null 2>&1; then
+  printf 'Missing upstream remote. Add https://github.com/we-promise/sure.git as upstream.\n' >&2
+  exit 1
+fi
+
+git fetch origin --prune
+git fetch upstream --prune --tags
+git switch main
+git merge --ff-only origin/main
+bin/verify-downstream-patch
+
+current_upstream="$(tr -d '[:space:]' < "$upstream_marker")"
+if target_commit="$(git rev-parse --verify "${target_ref}^{commit}" 2>/dev/null)"; then
+  :
+elif target_commit="$(git rev-parse --verify "upstream/${target_ref}^{commit}" 2>/dev/null)"; then
+  :
+else
+  printf 'Could not resolve upstream target %s.\n' "$target_ref" >&2
+  exit 1
+fi
+
+if [[ "$target_commit" == "$current_upstream" ]]; then
+  printf 'Already based on upstream %s.\n' "$current_upstream"
+  exit 0
+fi
+
+if ! git merge-base --is-ancestor "$current_upstream" "$target_commit"; then
+  printf 'Target %s is not a descendant of recorded upstream %s.\n' \
+    "$target_commit" "$current_upstream" >&2
+  exit 1
+fi
+
+target_short="$(git rev-parse --short=12 "$target_commit")"
+branch_name="chore/upstream-${target_short}"
+safety_tag="pre-upstream-${target_short}-upgrade"
+
+if git show-ref --verify --quiet "refs/heads/${branch_name}"; then
+  printf 'Branch %s already exists. Remove or rename it before retrying.\n' "$branch_name" >&2
+  exit 1
+fi
+
+if ! git show-ref --verify --quiet "refs/tags/${safety_tag}"; then
+  git tag "$safety_tag" main
+fi
+
+patch_backup="$(mktemp "${TMPDIR:-/tmp}/sure-custom-patch.XXXXXX")"
+trap 'rm -f "$patch_backup"' EXIT
+cp "$patch_file" "$patch_backup"
+
+git switch -c "$branch_name" "$target_commit"
+if ! git apply --index --3way "$patch_backup"; then
+  printf '\nDownstream patch conflicts with %s. Resolve the index, preserve every active item in docs/UPSTREAM.md, then continue manually.\n' \
+    "$target_commit" >&2
+  exit 1
+fi
+
+printf '%s\n' "$target_commit" > "$upstream_marker"
+git add -A
+git commit -m "Reapply downstream patches on upstream ${target_short}"
+
+bin/regenerate-downstream-patch
+git add "$patch_file"
+git commit --amend --no-edit
+bin/verify-downstream-patch
+
+printf '\nUpgrade branch is ready. Next steps:\n'
+printf '  1. Run the focused and full test suites from docs/UPSTREAM.md.\n'
+printf '  2. git push -u origin %s\n' "$branch_name"
+printf '  3. gh pr create --repo petrushin-ai/sure --base main --head %s\n' "$branch_name"
+printf '  4. Merge only after CI is green; publish and deploy by immutable digest.\n'

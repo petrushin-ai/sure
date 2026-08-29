@@ -1,0 +1,2098 @@
+diff --git a/.gitattributes b/.gitattributes
+index 36ff81d2..88b8b520 100644
+--- a/.gitattributes
++++ b/.gitattributes
+@@ -16,3 +16,7 @@ bin/* text eol=lf
+ *.sh text eol=lf
+ *.rb text eol=lf
+ .devcontainer/.bashrc text eol=lf
++
++# The generated aggregate patch preserves source hunks verbatim, including
++# whitespace markers that must not be interpreted as whitespace in this file.
++petrushin-ai-custom.patch -whitespace
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index a2afdb85..32d08f1a 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -4,6 +4,19 @@ on:
+   workflow_call:
+ 
+ jobs:
++  downstream_patch:
++    runs-on: ubuntu-latest
++    timeout-minutes: 5
++    steps:
++      - name: Checkout code and upstream ancestry
++        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
++        with:
++          fetch-depth: 0
++          persist-credentials: false
++
++      - name: Verify Petrushin AI downstream patch
++        run: bin/verify-downstream-patch
++
+   scan_ruby:
+     runs-on: ubuntu-latest
+     timeout-minutes: 10
+diff --git a/.upstream-commit b/.upstream-commit
+new file mode 100644
+index 00000000..bdef58d1
+--- /dev/null
++++ b/.upstream-commit
+@@ -0,0 +1 @@
++844d0abdf63673e7468dc12f49e1d29d6a44e7d3
+diff --git a/Dockerfile b/Dockerfile
+index f691c470..dbd86775 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -9,7 +9,7 @@ WORKDIR /rails
+ 
+ # Install base packages
+ RUN apt-get update -qq \
+-    && apt-get install --no-install-recommends -y curl libvips postgresql-client libyaml-0-2 procps libjemalloc2 \
++    && apt-get install --no-install-recommends -y curl libvips poppler-utils postgresql-client libyaml-0-2 procps libjemalloc2 \
+     && rm -rf /var/lib/apt/lists /var/cache/apt/archives
+ 
+ # Set production environment
+diff --git a/README.md b/README.md
+index 3dc55594..d5bfb86e 100644
+--- a/README.md
++++ b/README.md
+@@ -26,6 +26,14 @@ involved: [Discord](https://discord.gg/36ZGBsxYEK) • [Website](https://sure.am
+ > This repository is a community fork of the now-abandoned Maybe Finance project. <br />
+ > Learn more in their [final release](https://github.com/maybe-finance/maybe/releases/tag/v0.6.0) doc.
+ 
++## Petrushin AI fork maintenance
++
++This fork carries a documented set of production-required downstream patches.
++Before changing or updating it from `we-promise/sure`, follow
++[`docs/UPSTREAM.md`](docs/UPSTREAM.md). CI verifies that the complete
++downstream patch is current and can be reapplied to the recorded upstream
++commit.
++
+ ## Backstory
+ 
+ The [Maybe Finance](https://github.com/maybe-finance/maybe) (archived/abandoned repo) team spent most of 2021–2022 building a full-featured personal finance and wealth management app. It even included an “Ask an Advisor” feature that connected users with a real CFP/CFA — all included with your subscription.
+diff --git a/app/models/ai_health.rb b/app/models/ai_health.rb
+index e20fee29..a2444bf7 100644
+--- a/app/models/ai_health.rb
++++ b/app/models/ai_health.rb
+@@ -20,6 +20,7 @@ class AiHealth
+               :pgvector_extension_available, :pgvector_extension_enabled,
+               :pgvector_table_available, :qdrant_endpoint, :llm_probe,
+               :pdf_text_extraction_probe, :pdf_vision_processing_probe,
++              :pdf_transaction_extraction_probe,
+               :vector_store_probe, :embedding_probe
+ 
+   def initialize(run_probes: true, force_probes: false)
+@@ -72,6 +73,14 @@ class AiHealth
+     pdf_probe_status(pdf_vision_processing_probe, capable: @pdf_vision_processing_capable)
+   end
+ 
++  def pdf_transaction_extraction_supported?
++    @pdf_transaction_extraction_capable == true && pdf_transaction_extraction_probe.passing?
++  end
++
++  def pdf_transaction_extraction_status
++    pdf_probe_status(pdf_transaction_extraction_probe, capable: @pdf_transaction_extraction_capable)
++  end
++
+   def vector_store_configured?
+     @vector_store_configured
+   end
+@@ -93,7 +102,8 @@ class AiHealth
+   end
+ 
+   def last_checked_at
+-    [ llm_probe, pdf_text_extraction_probe, pdf_vision_processing_probe, vector_store_probe, embedding_probe ]
++    [ llm_probe, pdf_text_extraction_probe, pdf_vision_processing_probe, pdf_transaction_extraction_probe,
++      vector_store_probe, embedding_probe ]
+       .filter_map(&:checked_at)
+       .max
+   end
+@@ -134,6 +144,7 @@ class AiHealth
+       end
+       @pdf_text_extraction_capable = @pdf_processing_capable && @effective_llm_protocol == :openai
+       @pdf_vision_processing_capable = @pdf_processing_capable
++      @pdf_transaction_extraction_capable = @pdf_processing_capable
+ 
+       @openai_endpoint = redact_endpoint(openai_uri_base.presence || OPENAI_DEFAULT_ENDPOINT)
+       @llm_access_token = access_token(@effective_llm_protocol)
+@@ -161,6 +172,7 @@ class AiHealth
+       @llm_probe = llm_configured? ? Probe.not_checked : Probe.not_configured
+       @pdf_text_extraction_probe = llm_configured? && @pdf_text_extraction_capable ? Probe.not_checked : Probe.not_configured
+       @pdf_vision_processing_probe = llm_configured? && @pdf_vision_processing_capable ? Probe.not_checked : Probe.not_configured
++      @pdf_transaction_extraction_probe = llm_configured? && @pdf_transaction_extraction_capable ? Probe.not_checked : Probe.not_configured
+       @vector_store_probe = vector_store_adapter.present? ? Probe.not_checked : Probe.not_configured
+       @embedding_probe = vector_store_adapter == :pgvector ? Probe.not_checked : Probe.not_configured
+       return unless run_probes?
+@@ -192,6 +204,15 @@ class AiHealth
+             openai_compatible: @effective_llm_protocol == :openai && openai_compatible_endpoint?
+           )
+         end
++        if @pdf_transaction_extraction_capable
++          @pdf_transaction_extraction_probe = probe.pdf_transaction_extraction(
++            provider: @effective_llm_protocol,
++            endpoint: @llm_raw_endpoint,
++            access_token: @llm_access_token,
++            model: llm_model,
++            openai_compatible: @effective_llm_protocol == :openai && openai_compatible_endpoint?
++          )
++        end
+       end
+ 
+       case vector_store_adapter
+diff --git a/app/models/ai_health/probe.rb b/app/models/ai_health/probe.rb
+index 21cb5798..25dc9673 100644
+--- a/app/models/ai_health/probe.rb
++++ b/app/models/ai_health/probe.rb
+@@ -15,6 +15,28 @@ class AiHealth
+     EMBEDDING_TEST_INPUT = "Sure AI health check"
+     CHAT_TEST_INPUT = "Reply with OK."
+     PDF_TEST_INSTITUTION = "SUREHEALTHCHECKBANK"
++    PDF_TEST_EXPECTED_DATA = {
++      "institution_name" => PDF_TEST_INSTITUTION,
++      "statement_period_start" => "2026-01-01",
++      "statement_period_end" => "2026-01-31",
++      "transaction_count" => 2,
++      "opening_balance" => 100.0,
++      "closing_balance" => 125.0,
++      "currency" => "USD",
++      "account_holder" => "Health Check"
++    }.freeze
++    PDF_TRANSACTION_TEST_EXPECTED_DATA = {
++      bank_name: PDF_TEST_INSTITUTION,
++      account_holder: "Health Check",
++      account_number: nil,
++      period: { start_date: "2026-01-01", end_date: "2026-01-31" },
++      opening_balance: 100.0,
++      closing_balance: 125.0,
++      transactions: [
++        { date: "2026-01-10", amount: 50.0, name: "HEALTH CHECK DEPOSIT", category: "Income", notes: "HC-DEP" },
++        { date: "2026-01-20", amount: -25.0, name: "HEALTH CHECK PURCHASE", category: "Test Expenses", notes: "HC-PUR" }
++      ]
++    }.freeze
+     PDF_TEST_LINES = [
+       "Bank Statement",
+       "Institution: #{PDF_TEST_INSTITUTION}",
+@@ -23,6 +45,18 @@ class AiHealth
+       "Opening balance: USD 100.00",
+       "Closing balance: USD 125.00",
+       "Transactions: 2",
++      "Transaction 1",
++      "Date: 2026-01-10",
++      "Description: HEALTH CHECK DEPOSIT",
++      "Amount: USD 50.00",
++      "Reference: HC-DEP",
++      "Category: Income",
++      "Transaction 2",
++      "Date: 2026-01-20",
++      "Description: HEALTH CHECK PURCHASE",
++      "Amount: USD -25.00",
++      "Reference: HC-PUR",
++      "Category: Test Expenses",
+       "Synthetic data only. No customer data."
+     ].freeze
+     PDF_MAX_RESPONSE_TOKENS = 512
+@@ -115,6 +149,40 @@ class AiHealth
+       )
+     end
+ 
++    def pdf_transaction_extraction(provider:, endpoint:, access_token:, model:, openai_compatible: false)
++      run(
++        component: "pdf_transaction_extraction",
++        provider_key: provider,
++        endpoint: endpoint,
++        model: model,
++        credential: access_token,
++        verification: :synthetic_bank_statement
++      ) do
++        result = Timeout.timeout(timeout) do
++          case provider
++          when :openai
++            Provider::Openai::BankStatementExtractor.new(
++              client: openai_client(access_token:, endpoint:),
++              pdf_content: synthetic_pdf,
++              model: model,
++              custom_provider: openai_compatible
++            ).extract
++          when :anthropic
++            Provider::Anthropic::BankStatementExtractor.new(
++              client: anthropic_client(access_token:, endpoint:),
++              pdf_content: synthetic_pdf,
++              model: model
++            ).extract
++          else
++            raise Failure, :unsupported_provider
++          end
++        end
++
++        raise Failure, :schema_mismatch unless valid_transaction_extraction_result?(result)
++        raise Failure, :recognition_mismatch unless recognized_transaction_extraction_result?(result)
++      end
++    end
++
+     def openai_vector_store(endpoint:, access_token:)
+       run(
+         component: "vector_store",
+@@ -193,7 +261,8 @@ class AiHealth
+             end
+           end
+ 
+-          raise Failure, :invalid_response unless valid_pdf_result?(result)
++          raise Failure, :schema_mismatch unless Provider::LlmConcept.valid_pdf_processing_result?(result)
++          raise Failure, :recognition_mismatch unless recognized_pdf_result?(result)
+         end
+       end
+ 
+@@ -264,22 +333,44 @@ class AiHealth
+         response.is_a?(Hash) && response["choices"].is_a?(Array) && response["choices"].any?
+       end
+ 
+-      def valid_pdf_result?(result)
+-        result.is_a?(Provider::LlmConcept::PdfProcessingResult) &&
+-          result.document_type == "bank_statement" &&
+-          result.extracted_data.is_a?(Hash) &&
+-          result.extracted_data["institution_name"] == PDF_TEST_INSTITUTION
++      def recognized_pdf_result?(result)
++        return false unless result.document_type == "bank_statement"
++
++        data = result.extracted_data.stringify_keys
++        PDF_TEST_EXPECTED_DATA.all? { |key, value| data[key] == value }
++      end
++
++      def valid_transaction_extraction_result?(result)
++        return false unless result.is_a?(Hash)
++
++        data = result.symbolize_keys
++        required_keys = PDF_TRANSACTION_TEST_EXPECTED_DATA.keys
++        return false unless (required_keys - data.keys).empty?
++        return false unless data[:period].is_a?(Hash)
++        return false unless data[:transactions].is_a?(Array)
++
++        data[:transactions].all? do |transaction|
++          transaction.is_a?(Hash) &&
++            %i[date amount name category notes].all? { |key| transaction.key?(key) }
++        end
++      end
++
++      def recognized_transaction_extraction_result?(result)
++        data = result.symbolize_keys
++        expected = PDF_TRANSACTION_TEST_EXPECTED_DATA
++
++        expected.all? { |key, value| data[key] == value }
+       end
+ 
+       def synthetic_pdf
+         return @synthetic_pdf if defined?(@synthetic_pdf)
+ 
+         text = PDF_TEST_LINES.map { |line| "(#{line}) Tj T*" }.join("\n")
+-        content = "BT /F1 14 Tf 24 190 Td 22 TL\n#{text}\nET\n".b
++        content = "BT /F1 11 Tf 24 285 Td 13 TL\n#{text}\nET\n".b
+         objects = [
+           "<< /Type /Catalog /Pages 2 0 R >>",
+           "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+-          "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 480 216] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
++          "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 480 300] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+           "<< /Length #{content.bytesize} >>\nstream\n#{content}endstream",
+           "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+         ]
+diff --git a/app/models/provider/anthropic/bank_statement_extractor.rb b/app/models/provider/anthropic/bank_statement_extractor.rb
+index e91d44b4..5a98d19a 100644
+--- a/app/models/provider/anthropic/bank_statement_extractor.rb
++++ b/app/models/provider/anthropic/bank_statement_extractor.rb
+@@ -38,6 +38,9 @@ class Provider::Anthropic::BankStatementExtractor
+     )
+ 
+     parsed = extract_tool_input(response)
++    unless Provider::LlmConcept.valid_bank_statement_extraction_payload?(parsed)
++      raise Provider::Anthropic::Error, "Bank statement response did not match the required schema"
++    end
+     result = build_result(parsed)
+ 
+     truncated = stop_reason(response) == :max_tokens
+@@ -89,43 +92,7 @@ class Provider::Anthropic::BankStatementExtractor
+       {
+         name: TOOL_NAME,
+         description: "Return the full set of transactions and statement metadata extracted from the PDF.",
+-        input_schema: {
+-          type: "object",
+-          properties: {
+-            bank_name: { type: [ "string", "null" ] },
+-            account_holder: { type: [ "string", "null" ] },
+-            account_number: { type: [ "string", "null" ], description: "Typically last 4 digits only." },
+-            statement_period: {
+-              type: "object",
+-              properties: {
+-                start_date: { type: [ "string", "null" ], description: "YYYY-MM-DD" },
+-                end_date: { type: [ "string", "null" ], description: "YYYY-MM-DD" }
+-              },
+-              required: [],
+-              additionalProperties: false
+-            },
+-            opening_balance: { type: [ "number", "null" ] },
+-            closing_balance: { type: [ "number", "null" ] },
+-            transactions: {
+-              type: "array",
+-              description: "Every transaction in the statement, in document order.",
+-              items: {
+-                type: "object",
+-                properties: {
+-                  date: { type: "string", description: "YYYY-MM-DD" },
+-                  description: { type: "string" },
+-                  amount: { type: "number", description: "Negative for debits / expenses, positive for credits / deposits." },
+-                  reference: { type: [ "string", "null" ] },
+-                  category: { type: [ "string", "null" ] }
+-                },
+-                required: [ "date", "description", "amount" ],
+-                additionalProperties: false
+-              }
+-            }
+-          },
+-          required: [ "transactions" ],
+-          additionalProperties: false
+-        }
++        input_schema: Provider::LlmConcept.bank_statement_json_schema
+       }
+     end
+ 
+@@ -135,8 +102,10 @@ class Provider::Anthropic::BankStatementExtractor
+ 
+         Rules:
+           - Extract EVERY transaction in document order
++          - Preserve each transaction description exactly as printed
+           - Negative amounts for debits / expenses, positive for credits / deposits
+           - Dates in YYYY-MM-DD
++          - Extract reference and category only when clearly visible
+           - Use null for any field you cannot read; do not invent values
+       INSTRUCTIONS
+     end
+diff --git a/app/models/provider/anthropic/pdf_processor.rb b/app/models/provider/anthropic/pdf_processor.rb
+index b19d9202..1c647e03 100644
+--- a/app/models/provider/anthropic/pdf_processor.rb
++++ b/app/models/provider/anthropic/pdf_processor.rb
+@@ -83,42 +83,10 @@ class Provider::Anthropic::PdfProcessor
+     end
+ 
+     def output_tool
+-      extracted_data_properties = {
+-        institution_name: { type: [ "string", "null" ] },
+-        statement_period_start: { type: [ "string", "null" ], pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "YYYY-MM-DD or null" },
+-        statement_period_end: { type: [ "string", "null" ], pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "YYYY-MM-DD or null" },
+-        transaction_count: { type: [ "integer", "null" ] },
+-        opening_balance: { type: [ "number", "null" ] },
+-        closing_balance: { type: [ "number", "null" ] },
+-        currency: { type: [ "string", "null" ] },
+-        account_holder: { type: [ "string", "null" ] }
+-      }
+-
+       {
+         name: TOOL_NAME,
+         description: "Return the structured analysis of the attached document.",
+-        input_schema: {
+-          type: "object",
+-          properties: {
+-            document_type: {
+-              type: "string",
+-              enum: Import::DOCUMENT_TYPES,
+-              description: "Classification of the document."
+-            },
+-            summary: {
+-              type: "string",
+-              description: "Concise human-readable summary of the document."
+-            },
+-            extracted_data: {
+-              type: "object",
+-              properties: extracted_data_properties,
+-              required: [],
+-              additionalProperties: false
+-            }
+-          },
+-          required: [ "document_type", "summary", "extracted_data" ],
+-          additionalProperties: false
+-        }
++        input_schema: Provider::LlmConcept.pdf_processing_json_schema
+       }
+     end
+ 
+@@ -153,11 +121,17 @@ class Provider::Anthropic::PdfProcessor
+     end
+ 
+     def build_result(parsed)
+-      PdfProcessingResult.new(
++      result = PdfProcessingResult.new(
+         summary: parsed["summary"] || parsed[:summary],
+         document_type: normalize_document_type(parsed["document_type"] || parsed[:document_type]),
+         extracted_data: parsed["extracted_data"] || parsed[:extracted_data] || {}
+       )
++
++      unless Provider::LlmConcept.valid_pdf_processing_result?(result)
++        raise Provider::Anthropic::Error, "PDF processing response did not match Sure's schema"
++      end
++
++      result
+     end
+ 
+     def normalize_document_type(doc_type)
+diff --git a/app/models/provider/llm_concept.rb b/app/models/provider/llm_concept.rb
+index 698bf13e..e67220b2 100644
+--- a/app/models/provider/llm_concept.rb
++++ b/app/models/provider/llm_concept.rb
+@@ -1,6 +1,184 @@
+ module Provider::LlmConcept
+   extend ActiveSupport::Concern
+ 
++  PDF_PROCESSING_EXTRACTED_DATA_KEYS = %w[
++    institution_name
++    statement_period_start
++    statement_period_end
++    transaction_count
++    opening_balance
++    closing_balance
++    currency
++    account_holder
++  ].freeze
++
++  BANK_STATEMENT_KEYS = %w[
++    bank_name
++    account_holder
++    account_number
++    statement_period
++    opening_balance
++    closing_balance
++    transactions
++  ].freeze
++  BANK_STATEMENT_PERIOD_KEYS = %w[start_date end_date].freeze
++  BANK_STATEMENT_TRANSACTION_KEYS = %w[date description amount reference category].freeze
++
++  def self.pdf_processing_json_schema
++    {
++      type: "object",
++      properties: {
++        document_type: {
++          type: "string",
++          enum: Import::DOCUMENT_TYPES,
++          description: "Classification of the financial document."
++        },
++        summary: {
++          type: "string",
++          description: "Concise factual summary of the document."
++        },
++        extracted_data: {
++          type: "object",
++          properties: {
++            institution_name: { type: [ "string", "null" ] },
++            statement_period_start: { type: [ "string", "null" ], format: "date" },
++            statement_period_end: { type: [ "string", "null" ], format: "date" },
++            transaction_count: { type: [ "integer", "null" ], minimum: 0 },
++            opening_balance: { type: [ "number", "null" ] },
++            closing_balance: { type: [ "number", "null" ] },
++            currency: { type: [ "string", "null" ] },
++            account_holder: { type: [ "string", "null" ] }
++          },
++          required: PDF_PROCESSING_EXTRACTED_DATA_KEYS,
++          additionalProperties: false
++        }
++      },
++      required: %w[document_type summary extracted_data],
++      additionalProperties: false
++    }
++  end
++
++  def self.bank_statement_json_schema
++    {
++      type: "object",
++      properties: {
++        bank_name: { type: [ "string", "null" ] },
++        account_holder: { type: [ "string", "null" ] },
++        account_number: { type: [ "string", "null" ], description: "Typically last 4 digits only." },
++        statement_period: {
++          type: "object",
++          properties: {
++            start_date: { type: [ "string", "null" ], format: "date" },
++            end_date: { type: [ "string", "null" ], format: "date" }
++          },
++          required: BANK_STATEMENT_PERIOD_KEYS,
++          additionalProperties: false
++        },
++        opening_balance: { type: [ "number", "null" ] },
++        closing_balance: { type: [ "number", "null" ] },
++        transactions: {
++          type: "array",
++          description: "Every transaction in the statement, in document order.",
++          items: {
++            type: "object",
++            properties: {
++              date: { type: "string", format: "date" },
++              description: { type: "string", minLength: 1 },
++              amount: {
++                type: "number",
++                description: "Negative for debits / expenses, positive for credits / deposits."
++              },
++              reference: { type: [ "string", "null" ] },
++              category: { type: [ "string", "null" ] }
++            },
++            required: BANK_STATEMENT_TRANSACTION_KEYS,
++            additionalProperties: false
++          }
++        }
++      },
++      required: BANK_STATEMENT_KEYS,
++      additionalProperties: false
++    }
++  end
++
++  def self.valid_pdf_processing_result?(result)
++    return false unless result.is_a?(PdfProcessingResult)
++    return false unless Import::DOCUMENT_TYPES.include?(result.document_type)
++    return false unless result.summary.is_a?(String) && result.summary.present?
++    return false unless result.extracted_data.is_a?(Hash)
++
++    data = result.extracted_data.stringify_keys
++    return false unless data.keys.sort == PDF_PROCESSING_EXTRACTED_DATA_KEYS.sort
++    return false unless string_or_nil?(data["institution_name"])
++    return false unless iso_date_or_nil?(data["statement_period_start"])
++    return false unless iso_date_or_nil?(data["statement_period_end"])
++    return false unless data["transaction_count"].nil? || data["transaction_count"].is_a?(Integer)
++    return false if data["transaction_count"].is_a?(Integer) && data["transaction_count"].negative?
++    return false unless data["opening_balance"].nil? || data["opening_balance"].is_a?(Numeric)
++    return false unless data["closing_balance"].nil? || data["closing_balance"].is_a?(Numeric)
++    return false unless string_or_nil?(data["currency"])
++    return false unless string_or_nil?(data["account_holder"])
++
++    true
++  end
++
++  def self.valid_bank_statement_extraction_payload?(payload)
++    return false unless payload.is_a?(Hash)
++
++    data = payload.deep_stringify_keys
++    return false unless data.keys.sort == BANK_STATEMENT_KEYS.sort
++    return false unless string_or_nil?(data["bank_name"])
++    return false unless string_or_nil?(data["account_holder"])
++    return false unless string_or_nil?(data["account_number"])
++    return false unless data["statement_period"].is_a?(Hash)
++
++    period = data["statement_period"]
++    return false unless period.keys.sort == BANK_STATEMENT_PERIOD_KEYS.sort
++    return false unless iso_date_or_nil?(period["start_date"])
++    return false unless iso_date_or_nil?(period["end_date"])
++    return false unless data["opening_balance"].nil? || data["opening_balance"].is_a?(Numeric)
++    return false unless data["closing_balance"].nil? || data["closing_balance"].is_a?(Numeric)
++    return false unless data["transactions"].is_a?(Array)
++
++    data["transactions"].all? do |transaction|
++      next false unless transaction.is_a?(Hash)
++
++      transaction = transaction.stringify_keys
++      transaction.keys.sort == BANK_STATEMENT_TRANSACTION_KEYS.sort &&
++        iso_date?(transaction["date"]) &&
++        transaction["description"].is_a?(String) && transaction["description"].present? &&
++        transaction["amount"].is_a?(Numeric) &&
++        string_or_nil?(transaction["reference"]) &&
++        string_or_nil?(transaction["category"])
++    end
++  end
++
++  def self.string_or_nil?(value)
++    value.nil? || value.is_a?(String)
++  end
++  private_class_method :string_or_nil?
++
++  def self.iso_date_or_nil?(value)
++    return true if value.nil?
++    return false unless value.is_a?(String)
++
++    Date.iso8601(value)
++    true
++  rescue Date::Error
++    false
++  end
++  private_class_method :iso_date_or_nil?
++
++  def self.iso_date?(value)
++    return false unless value.is_a?(String)
++
++    Date.iso8601(value)
++    true
++  rescue Date::Error
++    false
++  end
++  private_class_method :iso_date?
++
+   AutoCategorization = Data.define(:transaction_id, :category_name)
+ 
+   def auto_categorize(transactions)
+diff --git a/app/models/provider/openai.rb b/app/models/provider/openai.rb
+index 1c6f5d86..ed0ca46c 100644
+--- a/app/models/provider/openai.rb
++++ b/app/models/provider/openai.rb
+@@ -274,7 +274,8 @@ class Provider::Openai < Provider
+       result = BankStatementExtractor.new(
+         client: client,
+         pdf_content: pdf_content,
+-        model: effective_model
++        model: effective_model,
++        custom_provider: custom_provider?
+       ).extract
+ 
+       upsert_langfuse_trace(trace: trace, output: { transaction_count: result[:transactions].size })
+diff --git a/app/models/provider/openai/bank_statement_extractor.rb b/app/models/provider/openai/bank_statement_extractor.rb
+index 59456d80..82bee774 100644
+--- a/app/models/provider/openai/bank_statement_extractor.rb
++++ b/app/models/provider/openai/bank_statement_extractor.rb
+@@ -1,11 +1,12 @@
+ class Provider::Openai::BankStatementExtractor
+   MAX_CHARS_PER_CHUNK = 3000
+-  attr_reader :client, :pdf_content, :model
++  attr_reader :client, :pdf_content, :model, :custom_provider
+ 
+-  def initialize(client:, pdf_content:, model:)
++  def initialize(client:, pdf_content:, model:, custom_provider: false)
+     @client = client
+     @pdf_content = pdf_content
+     @model = model
++    @custom_provider = custom_provider
+   end
+ 
+   def extract
+@@ -104,7 +105,7 @@ class Provider::Openai::BankStatementExtractor
+           { role: "system", content: is_first_chunk ? instructions_with_metadata : instructions_transactions_only },
+           { role: "user", content: "Extract transactions:\n\n#{text}" }
+         ],
+-        response_format: { type: "json_object" }
++        response_format: response_format
+       }
+ 
+       response = client.chat(parameters: params)
+@@ -113,6 +114,10 @@ class Provider::Openai::BankStatementExtractor
+       raise Provider::Openai::Error, "No response from AI" if content.blank?
+ 
+       parsed = parse_json_response(content)
++      parsed = canonicalize_payload(parsed) if custom_provider
++      unless Provider::LlmConcept.valid_bank_statement_extraction_payload?(parsed)
++        raise Provider::Openai::Error, "Bank statement response did not match the required schema"
++      end
+ 
+       {
+         transactions: normalize_transactions(parsed["transactions"] || []),
+@@ -133,7 +138,47 @@ class Provider::Openai::BankStatementExtractor
+       JSON.parse(cleaned)
+     rescue JSON::ParserError => e
+       Rails.logger.error("BankStatementExtractor JSON parse error: #{e.message} (content_length=#{content.to_s.bytesize})")
+-      { "transactions" => [] }
++      raise Provider::Openai::Error, "Could not parse bank statement extraction response"
++    end
++
++    def response_format
++      return { type: "json_object" } if custom_provider
++
++      {
++        type: "json_schema",
++        json_schema: {
++          name: "sure_bank_statement_extraction",
++          strict: true,
++          schema: Provider::LlmConcept.bank_statement_json_schema
++        }
++      }
++    end
++
++    def canonicalize_payload(payload)
++      data = payload.deep_stringify_keys
++      period = data["statement_period"].is_a?(Hash) ? data["statement_period"].stringify_keys : {}
++
++      {
++        "bank_name" => data["bank_name"],
++        "account_holder" => data["account_holder"],
++        "account_number" => data["account_number"],
++        "statement_period" => {
++          "start_date" => period["start_date"],
++          "end_date" => period["end_date"]
++        },
++        "opening_balance" => parse_amount(data["opening_balance"]),
++        "closing_balance" => parse_amount(data["closing_balance"]),
++        "transactions" => Array(data["transactions"]).map do |transaction|
++          transaction = transaction.stringify_keys
++          {
++            "date" => parse_date(transaction["date"]),
++            "description" => transaction["description"] || transaction["name"] || transaction["merchant"],
++            "amount" => parse_amount(transaction["amount"]),
++            "reference" => transaction["reference"] || transaction["notes"],
++            "category" => transaction["category"] || transaction["type"]
++          }
++        end
++      }
+     end
+ 
+     def deduplicate_transactions(transactions)
+@@ -182,11 +227,14 @@ class Provider::Openai::BankStatementExtractor
+     def parse_amount(amount)
+       return nil if amount.nil?
+ 
+-      if amount.is_a?(Numeric)
+-        amount.to_f
+-      else
+-        amount.to_s.gsub(/[^0-9.\-]/, "").to_f
+-      end
++      return amount.to_f if amount.is_a?(Numeric)
++
++      normalized = amount.to_s.gsub(/[^0-9.\-]/, "")
++      return nil unless normalized.match?(/\d/)
++
++      Float(normalized)
++    rescue ArgumentError
++      nil
+     end
+ 
+     def infer_category(txn)
+@@ -196,18 +244,32 @@ class Provider::Openai::BankStatementExtractor
+     def instructions_with_metadata
+       <<~INSTRUCTIONS.strip
+         Extract bank statement data as JSON. Return:
+-        {"bank_name":"...","account_holder":"...","account_number":"last 4 digits","statement_period":{"start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD"},"opening_balance":0.00,"closing_balance":0.00,"transactions":[{"date":"YYYY-MM-DD","description":"...","amount":-0.00}]}
+-
+-        Rules: Negative amounts for debits/expenses, positive for credits/deposits. Dates as YYYY-MM-DD. Extract ALL transactions. JSON only, no markdown.
++        {"bank_name":"...","account_holder":"...","account_number":"last 4 digits","statement_period":{"start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD"},"opening_balance":0.00,"closing_balance":0.00,"transactions":[{"date":"YYYY-MM-DD","description":"...","amount":-0.00,"reference":null,"category":null}]}
++
++        Rules:
++        - Extract ALL transactions in document order
++        - Preserve each transaction description exactly as printed
++        - Negative amounts for debits/expenses, positive for credits/deposits
++        - Dates as YYYY-MM-DD
++        - Extract reference and category only when clearly visible; otherwise return null
++        - Return null for unavailable statement metadata; do not invent values
++        - JSON only, no markdown
+       INSTRUCTIONS
+     end
+ 
+     def instructions_transactions_only
+       <<~INSTRUCTIONS.strip
+-        Extract transactions from bank statement text as JSON. Return:
+-        {"transactions":[{"date":"YYYY-MM-DD","description":"...","amount":-0.00}]}
+-
+-        Rules: Negative amounts for debits/expenses, positive for credits/deposits. Dates as YYYY-MM-DD. Extract ALL transactions. JSON only, no markdown.
++        Extract transactions from this continuation chunk as JSON. Return the complete response contract:
++        {"bank_name":null,"account_holder":null,"account_number":null,"statement_period":{"start_date":null,"end_date":null},"opening_balance":null,"closing_balance":null,"transactions":[{"date":"YYYY-MM-DD","description":"...","amount":-0.00,"reference":null,"category":null}]}
++
++        Rules:
++        - Extract ALL transactions in document order
++        - Preserve each transaction description exactly as printed
++        - Negative amounts for debits/expenses, positive for credits/deposits
++        - Dates as YYYY-MM-DD
++        - Extract reference and category only when clearly visible; otherwise return null
++        - Return null for unavailable metadata; do not invent values
++        - JSON only, no markdown
+       INSTRUCTIONS
+     end
+ end
+diff --git a/app/models/provider/openai/pdf_processor.rb b/app/models/provider/openai/pdf_processor.rb
+index 871ba7dc..f68c6062 100644
+--- a/app/models/provider/openai/pdf_processor.rb
++++ b/app/models/provider/openai/pdf_processor.rb
+@@ -1,6 +1,8 @@
+ class Provider::Openai::PdfProcessor
+   include Provider::Openai::Concerns::UsageRecorder
+ 
++  OUTPUT_SCHEMA_NAME = "sure_pdf_document_analysis".freeze
++
+   attr_reader :client, :model, :pdf_content, :custom_provider, :langfuse_trace, :family, :max_response_tokens,
+               :processing_mode
+ 
+@@ -82,6 +84,7 @@ class Provider::Openai::PdfProcessor
+       - For statements with many transactions, provide a count rather than listing each one
+       - Focus on providing actionable information that helps the user understand what they uploaded
+       - If the document is unreadable or the PDF is corrupted, indicate this clearly
++      - Return every field in the response format; use null when an extracted value is unavailable
+ 
+       Respond with ONLY valid JSON in this exact format (no markdown code blocks, no other text):
+       {
+@@ -124,7 +127,7 @@ class Provider::Openai::PdfProcessor
+             content: "Please analyze the following document text and provide a structured summary:\n\n#{pdf_text}"
+           }
+         ],
+-        response_format: { type: "json_object" }
++        response_format: response_format
+       }
+ 
+       response = client.chat(parameters: params)
+@@ -172,7 +175,7 @@ class Provider::Openai::PdfProcessor
+           type: "image_url",
+           image_url: {
+             url: "data:image/png;base64,#{img_base64}",
+-            detail: "low"
++            detail: "high"
+           }
+         }
+       end
+@@ -181,15 +184,15 @@ class Provider::Openai::PdfProcessor
+         text: "Please analyze this PDF document (#{images_base64.size} pages total, showing first #{[ images_base64.size, 5 ].min}) and respond with valid JSON only."
+       }
+ 
+-      # Note: response_format is not compatible with vision, so we ask for JSON in the prompt
+       params = {
+         model: effective_model,
+         messages: [
+           { role: "system", content: instructions + "\n\nIMPORTANT: Respond with valid JSON only, no markdown or other formatting." },
+           { role: "user", content: content }
+-        ],
+-        max_tokens: max_response_tokens
++        ]
+       }
++      params[:response_format] = response_format unless custom_provider
++      params[custom_provider ? :max_tokens : :max_completion_tokens] = max_response_tokens
+ 
+       response = client.chat(parameters: params)
+ 
+@@ -235,11 +238,30 @@ class Provider::Openai::PdfProcessor
+     end
+ 
+     def build_result(parsed)
+-      PdfProcessingResult.new(
++      result = PdfProcessingResult.new(
+         summary: parsed["summary"],
+         document_type: normalize_document_type(parsed["document_type"]),
+         extracted_data: parsed["extracted_data"] || {}
+       )
++
++      if !custom_provider && !Provider::LlmConcept.valid_pdf_processing_result?(result)
++        raise Provider::Openai::Error, "PDF processing response did not match Sure's schema"
++      end
++
++      result
++    end
++
++    def response_format
++      return { type: "json_object" } if custom_provider
++
++      {
++        type: "json_schema",
++        json_schema: {
++          name: OUTPUT_SCHEMA_NAME,
++          strict: true,
++          schema: Provider::LlmConcept.pdf_processing_json_schema
++        }
++      }
+     end
+ 
+     def normalize_document_type(doc_type)
+diff --git a/app/views/admin/system_health/_ai_status.html.erb b/app/views/admin/system_health/_ai_status.html.erb
+index 84ceb560..f646f881 100644
+--- a/app/views/admin/system_health/_ai_status.html.erb
++++ b/app/views/admin/system_health/_ai_status.html.erb
+@@ -10,6 +10,12 @@
+     status: ai_health.pdf_vision_processing_status,
+     supported: ai_health.pdf_vision_processing_supported?,
+     probe: ai_health.pdf_vision_processing_probe
++  },
++  {
++    key: :pdf_transaction_extraction,
++    status: ai_health.pdf_transaction_extraction_status,
++    supported: ai_health.pdf_transaction_extraction_supported?,
++    probe: ai_health.pdf_transaction_extraction_probe
+   }
+ ] %>
+ 
+diff --git a/bin/regenerate-downstream-patch b/bin/regenerate-downstream-patch
+new file mode 100755
+index 00000000..c08f95fd
+--- /dev/null
++++ b/bin/regenerate-downstream-patch
+@@ -0,0 +1,39 @@
++#!/usr/bin/env bash
++
++set -Eeuo pipefail
++
++readonly repo_root="$(git rev-parse --show-toplevel)"
++readonly upstream_marker="$repo_root/.upstream-commit"
++readonly patch_file="$repo_root/petrushin-ai-custom.patch"
++
++if [[ ! -s "$upstream_marker" ]]; then
++  printf 'Missing or empty upstream marker: %s\n' "$upstream_marker" >&2
++  exit 1
++fi
++
++upstream_commit="$(tr -d '[:space:]' < "$upstream_marker")"
++if [[ ! "$upstream_commit" =~ ^[0-9a-f]{40}$ ]]; then
++  printf 'Expected a full 40-character SHA in %s.\n' "$upstream_marker" >&2
++  exit 1
++fi
++
++if ! git cat-file -e "${upstream_commit}^{commit}" 2>/dev/null; then
++  printf 'Upstream commit %s is not available locally. Fetch upstream first.\n' "$upstream_commit" >&2
++  exit 1
++fi
++
++patch_tmp_file="$(mktemp "${TMPDIR:-/tmp}/sure-downstream-patch.XXXXXX")"
++trap 'rm -f "$patch_tmp_file"' EXIT
++
++git diff --binary "$upstream_commit" HEAD -- \
++  . \
++  ':(exclude)petrushin-ai-custom.patch' > "$patch_tmp_file"
++
++if [[ ! -s "$patch_tmp_file" ]]; then
++  printf 'Refusing to write an empty downstream patch.\n' >&2
++  exit 1
++fi
++
++mv "$patch_tmp_file" "$patch_file"
++printf 'Regenerated %s from upstream %s to HEAD %s.\n' \
++  "$patch_file" "$upstream_commit" "$(git rev-parse HEAD)"
+diff --git a/bin/upgrade-upstream b/bin/upgrade-upstream
+new file mode 100755
+index 00000000..3604d0c2
+--- /dev/null
++++ b/bin/upgrade-upstream
+@@ -0,0 +1,95 @@
++#!/usr/bin/env bash
++
++set -Eeuo pipefail
++
++target_ref="${1:-}"
++if [[ -z "$target_ref" ]]; then
++  printf 'Usage: bin/upgrade-upstream <upstream-ref>\n' >&2
++  printf 'Example: bin/upgrade-upstream upstream/main\n' >&2
++  exit 1
++fi
++
++readonly repo_root="$(git rev-parse --show-toplevel)"
++readonly patch_file="$repo_root/petrushin-ai-custom.patch"
++readonly upstream_marker="$repo_root/.upstream-commit"
++
++if [[ ! -s "$patch_file" || ! -s "$upstream_marker" ]]; then
++  printf 'The downstream patch and upstream marker must both exist before an upgrade.\n' >&2
++  exit 1
++fi
++
++if [[ -n "$(git status --porcelain)" ]]; then
++  printf 'Working tree is not clean. Commit or stash changes first.\n' >&2
++  exit 1
++fi
++
++if ! git remote get-url upstream >/dev/null 2>&1; then
++  printf 'Missing upstream remote. Add https://github.com/we-promise/sure.git as upstream.\n' >&2
++  exit 1
++fi
++
++git fetch origin --prune
++git fetch upstream --prune --tags
++git switch main
++git merge --ff-only origin/main
++bin/verify-downstream-patch
++
++current_upstream="$(tr -d '[:space:]' < "$upstream_marker")"
++if target_commit="$(git rev-parse --verify "${target_ref}^{commit}" 2>/dev/null)"; then
++  :
++elif target_commit="$(git rev-parse --verify "upstream/${target_ref}^{commit}" 2>/dev/null)"; then
++  :
++else
++  printf 'Could not resolve upstream target %s.\n' "$target_ref" >&2
++  exit 1
++fi
++
++if [[ "$target_commit" == "$current_upstream" ]]; then
++  printf 'Already based on upstream %s.\n' "$current_upstream"
++  exit 0
++fi
++
++if ! git merge-base --is-ancestor "$current_upstream" "$target_commit"; then
++  printf 'Target %s is not a descendant of recorded upstream %s.\n' \
++    "$target_commit" "$current_upstream" >&2
++  exit 1
++fi
++
++target_short="$(git rev-parse --short=12 "$target_commit")"
++branch_name="chore/upstream-${target_short}"
++safety_tag="pre-upstream-${target_short}-upgrade"
++
++if git show-ref --verify --quiet "refs/heads/${branch_name}"; then
++  printf 'Branch %s already exists. Remove or rename it before retrying.\n' "$branch_name" >&2
++  exit 1
++fi
++
++if ! git show-ref --verify --quiet "refs/tags/${safety_tag}"; then
++  git tag "$safety_tag" main
++fi
++
++patch_backup="$(mktemp "${TMPDIR:-/tmp}/sure-custom-patch.XXXXXX")"
++trap 'rm -f "$patch_backup"' EXIT
++cp "$patch_file" "$patch_backup"
++
++git switch -c "$branch_name" "$target_commit"
++if ! git apply --index --3way "$patch_backup"; then
++  printf '\nDownstream patch conflicts with %s. Resolve the index, preserve every active item in docs/UPSTREAM.md, then continue manually.\n' \
++    "$target_commit" >&2
++  exit 1
++fi
++
++printf '%s\n' "$target_commit" > "$upstream_marker"
++git add -A
++git commit -m "Reapply downstream patches on upstream ${target_short}"
++
++bin/regenerate-downstream-patch
++git add "$patch_file"
++git commit --amend --no-edit
++bin/verify-downstream-patch
++
++printf '\nUpgrade branch is ready. Next steps:\n'
++printf '  1. Run the focused and full test suites from docs/UPSTREAM.md.\n'
++printf '  2. git push -u origin %s\n' "$branch_name"
++printf '  3. gh pr create --repo petrushin-ai/sure --base main --head %s\n' "$branch_name"
++printf '  4. Merge only after CI is green; publish and deploy by immutable digest.\n'
+diff --git a/bin/verify-downstream-patch b/bin/verify-downstream-patch
+new file mode 100755
+index 00000000..97d04be6
+--- /dev/null
++++ b/bin/verify-downstream-patch
+@@ -0,0 +1,77 @@
++#!/usr/bin/env bash
++
++set -Eeuo pipefail
++
++readonly repo_root="$(git rev-parse --show-toplevel)"
++readonly upstream_marker="$repo_root/.upstream-commit"
++readonly patch_file="$repo_root/petrushin-ai-custom.patch"
++
++if [[ ! -s "$upstream_marker" ]]; then
++  printf 'Missing or empty upstream marker: %s\n' "$upstream_marker" >&2
++  exit 1
++fi
++
++if [[ ! -s "$patch_file" ]]; then
++  printf 'Missing or empty downstream patch: %s\n' "$patch_file" >&2
++  exit 1
++fi
++
++upstream_commit="$(tr -d '[:space:]' < "$upstream_marker")"
++if [[ ! "$upstream_commit" =~ ^[0-9a-f]{40}$ ]]; then
++  printf 'Expected a full 40-character SHA in %s.\n' "$upstream_marker" >&2
++  exit 1
++fi
++
++if ! git cat-file -e "${upstream_commit}^{commit}" 2>/dev/null; then
++  printf 'Upstream commit %s is not available locally. Fetch upstream first.\n' "$upstream_commit" >&2
++  exit 1
++fi
++
++if ! git merge-base --is-ancestor "$upstream_commit" HEAD; then
++  printf 'Recorded upstream commit %s is not an ancestor of HEAD.\n' "$upstream_commit" >&2
++  exit 1
++fi
++
++verify_tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/sure-patch-verify.XXXXXX")"
++verify_worktree="$verify_tmp_root/worktree"
++expected_patch="$verify_tmp_root/expected.patch"
++apply_log="$verify_tmp_root/apply.log"
++worktree_added=false
++
++cleanup() {
++  if [[ "$worktree_added" == true ]]; then
++    git worktree remove --force "$verify_worktree" >/dev/null 2>&1 || true
++  fi
++  rm -rf "$verify_tmp_root"
++}
++trap cleanup EXIT
++
++git diff --binary "$upstream_commit" HEAD -- \
++  . \
++  ':(exclude)petrushin-ai-custom.patch' > "$expected_patch"
++
++if ! cmp -s "$expected_patch" "$patch_file"; then
++  printf 'Downstream patch is stale. Run bin/regenerate-downstream-patch and amend the commit.\n' >&2
++  exit 1
++fi
++
++git worktree add --detach "$verify_worktree" "$upstream_commit" >/dev/null
++worktree_added=true
++if ! git -C "$verify_worktree" apply --check --3way "$patch_file" >"$apply_log" 2>&1; then
++  printf 'Downstream patch does not apply cleanly to upstream %s:\n' "$upstream_commit" >&2
++  sed -n '1,120p' "$apply_log" >&2
++  exit 1
++fi
++
++if ! git -C "$verify_worktree" apply --index --3way "$patch_file" >"$apply_log" 2>&1; then
++  printf 'Downstream patch failed while applying to upstream %s:\n' "$upstream_commit" >&2
++  sed -n '1,120p' "$apply_log" >&2
++  exit 1
++fi
++
++if git -C "$verify_worktree" diff --cached --quiet; then
++  printf 'Downstream patch applied no changes to upstream %s.\n' "$upstream_commit" >&2
++  exit 1
++fi
++
++printf 'Downstream patch is current and applies cleanly to upstream %s.\n' "$upstream_commit"
+diff --git a/config/locales/views/admin/system_health/en.yml b/config/locales/views/admin/system_health/en.yml
+index 939e97c6..d060bc61 100644
+--- a/config/locales/views/admin/system_health/en.yml
++++ b/config/locales/views/admin/system_health/en.yml
+@@ -51,6 +51,9 @@ en:
+             pdf_vision_processing_failed:
+               title: The synthetic PDF vision/native check failed
+               message: Sure could not complete the image or native-document PDF path through the configured model. No customer data was sent. The failure was recorded in Settings → Debug logs and Rails.logger.
++            pdf_transaction_extraction_failed:
++              title: The synthetic bank-statement extraction check failed
++              message: Sure could not extract the complete transaction and statement-metadata contract from a synthetic bank statement. No customer data was sent. The failure was recorded in Settings → Debug logs and Rails.logger.
+             vector_probe_failed:
+               title: The document-search live check failed
+               message: Sure could not verify the selected vector store and every required embedding service. The failure was recorded in Settings → Debug logs and Rails.logger.
+@@ -65,7 +68,7 @@ en:
+               message: Check the adapter requirements below. For pgvector, the database must provide the vector extension or an existing vector_store_chunks table.
+           llm:
+             title: LLM and PDF processing
+-            description: The live checks verify the configured model, then separately exercise text extraction and vision/native processing with a one-page synthetic PDF containing no customer data. Credential values are never displayed.
++            description: The live checks verify the configured model, exercise text and vision/native PDF classification, and extract exact statement metadata plus transactions from a one-page synthetic PDF containing no customer data. Credential values are never displayed.
+           vector_store:
+             title: Vector store and document search
+             description: The live check queries the hosted vector-store API, or tests the pgvector table and creates one short embedding without storing it.
+@@ -76,6 +79,7 @@ en:
+             endpoint: Endpoint
+             pdf_text_extraction: PDF text-extraction path
+             pdf_vision_processing: PDF vision/native path
++            pdf_transaction_extraction: Bank-statement transaction extraction
+             request_timeout: Request timeout
+             openai_credentials: OpenAI credentials
+             openai_compatible_credentials: OpenAI-compatible API credentials
+@@ -89,6 +93,7 @@ en:
+             embedding_dimensions: Embedding dimensions
+             pdf_text_extraction_failure_reason: Text-extraction failure reason
+             pdf_vision_processing_failure_reason: Vision/native failure reason
++            pdf_transaction_extraction_failure_reason: Transaction-extraction failure reason
+             storage_probe: pgvector storage check
+             embedding_probe: Embedding endpoint check
+             failure_reason: Failure reason
+@@ -139,6 +144,8 @@ en:
+           failure_codes:
+             model_not_available: The configured model was not returned by the provider
+             invalid_response: The service returned an unexpected response
++            schema_mismatch: The PDF response did not match Sure's required schema
++            recognition_mismatch: The PDF response matched the schema but did not recognize all expected test values
+             dimensions_mismatch: The embedding vector dimensions do not match the configured dimensions
+             extension_not_enabled: The PostgreSQL vector extension is not enabled
+             table_not_found: The vector_store_chunks table was not found
+diff --git a/docs/UPSTREAM.md b/docs/UPSTREAM.md
+new file mode 100644
+index 00000000..8add5702
+--- /dev/null
++++ b/docs/UPSTREAM.md
+@@ -0,0 +1,219 @@
++# Maintaining the Petrushin AI Sure fork
++
++This repository is a native GitHub fork of [`we-promise/sure`](https://github.com/we-promise/sure).
++It keeps a small set of production-required downstream patches for the
++`f.teknologia.org` deployment.
++
++## Ownership boundary
++
++- `petrushin-ai/sure` owns source changes, the downstream patch, tests, and
++  the multi-architecture image build.
++- `we-digital/devops` owns the pinned production image digest, backups,
++  rollout, health verification, and rollback.
++- Never deploy a mutable branch or tag. Merge a reviewed fork PR, wait for the
++  publish workflow, inspect the OCI revision, and pin the resulting index
++  digest in `deployments/sure-teknologia/compose.yml`.
++
++## Source-of-truth artifacts
++
++- `.upstream-commit` records the exact upstream commit currently incorporated
++  into the fork. Use a full 40-character SHA.
++- `petrushin-ai-custom.patch` is the complete diff from that upstream commit
++  to the fork, excluding the patch file itself.
++- `bin/regenerate-downstream-patch` regenerates the patch after an intentional
++  downstream change.
++- `bin/verify-downstream-patch` proves that the committed patch matches the
++  tree and applies cleanly to the recorded upstream commit.
++- `bin/upgrade-upstream` creates an upgrade branch from a newer upstream ref,
++  applies the patch with Git's three-way merge support, advances the marker,
++  and regenerates the patch.
++
++CI runs `bin/verify-downstream-patch` on every fork PR and before every image
++publish. A stale or non-applicable patch is a hard failure.
++
++## Active downstream patch ledger
++
++### SURE-001 — OpenAI PDF vision token limit
++
++- Source: [`petrushin-ai/sure#1`](https://github.com/petrushin-ai/sure/pull/1),
++  merge commit `e72f4f5467ea36a895417cf71cfd8934e94c2b1e`.
++- Purpose: official OpenAI Chat Completions requests use
++  `max_completion_tokens`; custom OpenAI-compatible endpoints retain
++  `max_tokens` for compatibility.
++- Main conflict area: `app/models/provider/openai.rb` and the OpenAI PDF
++  processor tests.
++- Retirement rule: remove only after upstream supports both request shapes
++  with equivalent regression coverage.
++
++### SURE-002 — PDF vision runtime dependency
++
++- Source: [`petrushin-ai/sure#2`](https://github.com/petrushin-ai/sure/pull/2),
++  merge commit `76b8fd0dab50f133f220e18d38189e93678f44bd`.
++- Purpose: install `poppler-utils`, which provides the `pdftoppm` executable
++  used to convert scanned PDF pages before vision processing.
++- Main conflict area: `Dockerfile` runtime packages.
++- Retirement rule: remove only when the upstream runtime supplies a verified
++  PDF-to-image implementation used by `Provider::Openai::PdfProcessor`.
++
++### SURE-003 — Exact PDF classification and metadata schema
++
++- Source: [`petrushin-ai/sure#3`](https://github.com/petrushin-ai/sure/pull/3),
++  merge commit `a6d5d34f28dd2dbd4401a5031cea22f2b6b5d283`.
++- Purpose: share one strict classification/metadata JSON Schema between
++  OpenAI and Anthropic; reject missing, malformed, or additional fields; and
++  validate exact synthetic metadata through both PDF processing paths.
++- Main conflict areas: `app/models/provider/llm_concept.rb`, both provider PDF
++  processors, `app/models/ai_health*`, System Health UI/locales, and their
++  tests.
++- Retirement rule: remove only after upstream has an equally strict shared
++  contract and distinguishes schema failures from recognition failures.
++
++### SURE-004 — Exact bank-statement transaction schema
++
++- Source: [`petrushin-ai/sure#4`](https://github.com/petrushin-ai/sure/pull/4),
++  merge commit `ade989b7401acd982f45a90fbc726a21da0e54e5`.
++- Purpose: enforce Sure's canonical bank-statement structure for bank/account
++  metadata, statement period, balances, and every transaction's date,
++  description, signed amount, reference, and category. Official OpenAI uses
++  Structured Outputs, Anthropic uses the same tool schema, and compatible
++  providers are normalized and validated before acceptance.
++- Main conflict areas: `app/models/provider/llm_concept.rb`, both bank
++  statement extractors, AI health probes/UI, and provider/health tests.
++- Retirement rule: remove only after upstream provides the same canonical
++  schema, runtime validation, explicit failure behavior, and end-to-end
++  transaction-recognition health probe.
++
++### SURE-005 — Fork maintenance guardrails
++
++- Source: this document, `.upstream-commit`,
++  `petrushin-ai-custom.patch`, the three `bin/*downstream*`/upgrade commands,
++  and the `downstream_patch` CI job.
++- Purpose: make loss or silent drift of SURE-001 through SURE-004 detectable
++  during every ordinary change and every upstream update.
++- Retirement rule: keep while any downstream patch remains active.
++
++If upstream absorbs a patch, record the upstream PR and commit here, compare
++behavior and tests, remove only the duplicated downstream implementation, and
++regenerate the patch. Do not silently delete a ledger entry.
++
++## Ordinary downstream changes
++
++Every downstream code change must update this ledger when its behavior or
++retirement condition differs from the existing entries. After committing the
++source change:
++
++```bash
++bin/regenerate-downstream-patch
++git add petrushin-ai-custom.patch docs/UPSTREAM.md
++git commit --amend --no-edit
++bin/verify-downstream-patch
++```
++
++The patch must remain a deterministic representation of the complete fork
++delta, not a hand-edited selection of hunks.
++
++## Upstream update procedure
++
++### 1. Pre-flight
++
++```bash
++git status --short --branch
++git fetch origin --prune
++git fetch upstream --prune --tags
++git switch main
++git merge --ff-only origin/main
++cat .upstream-commit
++bin/verify-downstream-patch
++```
++
++Review the upstream delta before applying it:
++
++```bash
++git log --oneline "$(cat .upstream-commit)..upstream/main"
++git diff --stat "$(cat .upstream-commit)..upstream/main"
++git diff --name-only "$(cat .upstream-commit)..upstream/main"
++```
++
++Compare changed upstream files with every conflict area in the active ledger.
++If upstream implemented similar behavior, inspect it semantically instead of
++blindly retaining both versions.
++
++### 2. Create the upgrade branch and reapply the patch
++
++```bash
++bin/upgrade-upstream upstream/main
++```
++
++The command:
++
++1. requires a clean tree and fast-forwards local `main` to `origin/main`;
++2. verifies the existing downstream patch;
++3. rejects downgrades or a target outside the recorded upstream lineage;
++4. creates a local safety tag and an upgrade branch from the exact target
++   upstream commit;
++5. applies `petrushin-ai-custom.patch` with `git apply --3way`;
++6. updates `.upstream-commit`, commits the reapplied changes, regenerates the
++   patch, and verifies it in a detached worktree.
++
++If application conflicts, the command stops without committing. Resolve each
++conflict against the ledger, run the focused tests below, commit the resolved
++tree, regenerate the patch, and rerun `bin/verify-downstream-patch`.
++
++### 3. Required verification
++
++```bash
++bin/verify-downstream-patch
++bin/rails test \
++  test/models/provider/llm_concept_test.rb \
++  test/models/provider/openai/pdf_processor_test.rb \
++  test/models/provider/openai/bank_statement_extractor_test.rb \
++  test/models/provider/anthropic/pdf_processor_test.rb \
++  test/models/provider/anthropic/bank_statement_extractor_test.rb \
++  test/models/ai_health/probe_test.rb \
++  test/controllers/admin/system_health_controller_test.rb
++bin/rails test:system TEST=test/system/admin/system_health_test.rb
++bin/rubocop \
++  app/models/ai_health.rb \
++  app/models/ai_health/probe.rb \
++  app/models/provider/llm_concept.rb \
++  app/models/provider/openai.rb \
++  app/models/provider/openai/pdf_processor.rb \
++  app/models/provider/openai/bank_statement_extractor.rb \
++  app/models/provider/anthropic/pdf_processor.rb \
++  app/models/provider/anthropic/bank_statement_extractor.rb
++bin/rails zeitwerk:check
++```
++
++Also run the full GitHub CI suite. Provider preflight must use a synthetic PDF
++with no customer data and must confirm exact metadata plus exact transaction
++values; successful HTTP status alone is insufficient.
++
++### 4. PR, build, and deploy
++
++Always specify the fork explicitly so a PR cannot be opened against upstream:
++
++```bash
++git push -u origin chore/upstream-<target-sha>
++gh pr create --repo petrushin-ai/sure --base main \
++  --head chore/upstream-<target-sha>
++```
++
++After merge:
++
++1. wait for `Publish Docker image` to finish successfully;
++2. verify the OCI index contains amd64 and arm64 and that
++   `org.opencontainers.image.revision` equals the fork merge commit;
++3. update only the immutable digest in
++   `we-digital/devops/deployments/sure-teknologia/compose.yml`;
++4. follow `we-digital/devops/docs/runbooks/sure-teknologia.md` for backup,
++   guarded deployment, live AI probes, and rollback.
++
++## Rollback
++
++- Before merge, return to the local safety tag printed by
++  `bin/upgrade-upstream`; never force-push `main`.
++- After deployment, restore the previous image digest through
++  `we-digital/devops` and rerun its deployment procedure.
++- If an upstream update includes forward-only data migrations, use the
++  verified pre-change backup rather than assuming an image-only rollback is
++  sufficient.
+diff --git a/test/controllers/admin/system_health_controller_test.rb b/test/controllers/admin/system_health_controller_test.rb
+index 5af9070d..f1b5e0a9 100644
+--- a/test/controllers/admin/system_health_controller_test.rb
++++ b/test/controllers/admin/system_health_controller_test.rb
+@@ -21,6 +21,7 @@ class Admin::SystemHealthControllerTest < ActionDispatch::IntegrationTest
+     AiHealth::Probe.any_instance.stubs(:llm).returns(probe_result(:passing))
+     AiHealth::Probe.any_instance.stubs(:pdf_text_extraction).returns(probe_result(:passing))
+     AiHealth::Probe.any_instance.stubs(:pdf_vision_processing).returns(probe_result(:passing))
++    AiHealth::Probe.any_instance.stubs(:pdf_transaction_extraction).returns(probe_result(:passing))
+     AiHealth::Probe.any_instance.stubs(:openai_vector_store).returns(probe_result(:passing))
+     AiHealth::Probe.any_instance.stubs(:pgvector).returns(probe_result(:passing))
+     AiHealth::Probe.any_instance.stubs(:embedding).returns(probe_result(:passing))
+@@ -101,7 +102,8 @@ class Admin::SystemHealthControllerTest < ActionDispatch::IntegrationTest
+     assert_match(/Live checks passed/, response.body)
+     assert_match(/PDF text-extraction path/, response.body)
+     assert_match(/PDF vision\/native path/, response.body)
+-    assert_equal 2, response.body.scan(/Synthetic PDF check passed/).size
++    assert_match(/Bank-statement transaction extraction/, response.body)
++    assert_equal 3, response.body.scan(/Synthetic PDF check passed/).size
+     assert_no_match(/sk-secret-openai/, response.body)
+   end
+ 
+@@ -111,6 +113,7 @@ class Admin::SystemHealthControllerTest < ActionDispatch::IntegrationTest
+     AiHealth::Probe.any_instance.expects(:llm).never
+     AiHealth::Probe.any_instance.expects(:pdf_text_extraction).never
+     AiHealth::Probe.any_instance.expects(:pdf_vision_processing).never
++    AiHealth::Probe.any_instance.expects(:pdf_transaction_extraction).never
+     AiHealth::Probe.any_instance.expects(:openai_vector_store).never
+ 
+     with_ai_environment("OPENAI_ACCESS_TOKEN" => "sk-secret-openai") do
+@@ -156,7 +159,7 @@ class Admin::SystemHealthControllerTest < ActionDispatch::IntegrationTest
+     assert_no_match(/local-token|uri-secret|query-secret/, response.body)
+   end
+ 
+-  test "AI status reports text and vision PDF probes separately" do
++  test "AI status reports PDF probes separately" do
+     sign_in users(:sure_support_staff)
+     stub_healthy_sidekiq
+     AiHealth::Probe.any_instance.stubs(:pdf_vision_processing).returns(
+@@ -170,6 +173,7 @@ class Admin::SystemHealthControllerTest < ActionDispatch::IntegrationTest
+     assert_response :success
+     assert_match(/PDF text-extraction path/, response.body)
+     assert_match(/PDF vision\/native path/, response.body)
++    assert_match(/Bank-statement transaction extraction/, response.body)
+     assert_match(/The synthetic PDF vision\/native check failed/, response.body)
+     assert_match(/Synthetic PDF check passed/, response.body)
+     assert_match(/Synthetic PDF check failed/, response.body)
+@@ -183,6 +187,7 @@ class Admin::SystemHealthControllerTest < ActionDispatch::IntegrationTest
+     stub_healthy_sidekiq
+     AiHealth::Probe.any_instance.expects(:pdf_text_extraction).never
+     AiHealth::Probe.any_instance.expects(:pdf_vision_processing).never
++    AiHealth::Probe.any_instance.expects(:pdf_transaction_extraction).never
+ 
+     with_ai_environment(
+       "OPENAI_ACCESS_TOKEN" => "sk-secret-openai",
+diff --git a/test/models/ai_health/probe_test.rb b/test/models/ai_health/probe_test.rb
+index 5e7430cd..c808a2c7 100644
+--- a/test/models/ai_health/probe_test.rb
++++ b/test/models/ai_health/probe_test.rb
+@@ -92,9 +92,7 @@ class AiHealth::ProbeTest < ActiveSupport::TestCase
+             "content" => {
+               document_type: "bank_statement",
+               summary: "A synthetic bank statement containing no customer data.",
+-              extracted_data: {
+-                institution_name: AiHealth::Probe::PDF_TEST_INSTITUTION
+-              }
++              extracted_data: AiHealth::Probe::PDF_TEST_EXPECTED_DATA
+             }.to_json
+           }
+         }
+@@ -132,9 +130,7 @@ class AiHealth::ProbeTest < ActiveSupport::TestCase
+             "content" => {
+               document_type: "bank_statement",
+               summary: "A synthetic bank statement containing no customer data.",
+-              extracted_data: {
+-                institution_name: AiHealth::Probe::PDF_TEST_INSTITUTION
+-              }
++              extracted_data: AiHealth::Probe::PDF_TEST_EXPECTED_DATA
+             }.to_json
+           }
+         }
+@@ -162,7 +158,7 @@ class AiHealth::ProbeTest < ActiveSupport::TestCase
+     assert_not_includes instructions, AiHealth::Probe::PDF_TEST_INSTITUTION
+   end
+ 
+-  test "PDF processing probes require the expected institution in the standard result fields" do
++  test "PDF processing probes distinguish recognition mismatches from schema mismatches" do
+     response = {
+       "choices" => [
+         {
+@@ -170,7 +166,7 @@ class AiHealth::ProbeTest < ActiveSupport::TestCase
+             "content" => {
+               document_type: "bank_statement",
+               summary: "A different bank statement.",
+-              extracted_data: { institution_name: "Another Bank" }
++              extracted_data: AiHealth::Probe::PDF_TEST_EXPECTED_DATA.merge("institution_name" => "Another Bank")
+             }.to_json
+           }
+         }
+@@ -191,7 +187,38 @@ class AiHealth::ProbeTest < ActiveSupport::TestCase
+     )
+ 
+     assert result.failing?
+-    assert_equal :invalid_response, result.failure_code
++    assert_equal :recognition_mismatch, result.failure_code
++  end
++
++  test "PDF processing probes report a schema mismatch for incomplete results" do
++    response = {
++      "choices" => [
++        {
++          "message" => {
++            "content" => {
++              document_type: "bank_statement",
++              summary: "An incomplete result.",
++              extracted_data: { institution_name: AiHealth::Probe::PDF_TEST_INSTITUTION }
++            }.to_json
++          }
++        }
++      ]
++    }
++    @probe.stubs(:openai_client).returns(stub(chat: response))
++    Provider::Openai::PdfProcessor.any_instance.stubs(:convert_pdf_to_images).returns([ "encoded-page" ])
++    Rails.logger.stubs(:error)
++    DebugLogEntry.stubs(:capture)
++
++    result = @probe.pdf_vision_processing(
++      provider: :openai,
++      endpoint: "https://api.cloudflare.example.test/v1",
++      access_token: "token",
++      model: "vision-model",
++      openai_compatible: true
++    )
++
++    assert result.failing?
++    assert_equal :schema_mismatch, result.failure_code
+   end
+ 
+   test "PDF vision probe sends the synthetic PDF as an Anthropic document block" do
+@@ -200,9 +227,7 @@ class AiHealth::ProbeTest < ActiveSupport::TestCase
+       {
+         "document_type" => "bank_statement",
+         "summary" => "A synthetic bank statement containing no customer data.",
+-        "extracted_data" => {
+-          "institution_name" => AiHealth::Probe::PDF_TEST_INSTITUTION
+-        }
++        "extracted_data" => AiHealth::Probe::PDF_TEST_EXPECTED_DATA
+       }
+     )
+     response = Struct.new(:content, :usage).new([ tool_use ], nil)
+@@ -213,7 +238,7 @@ class AiHealth::ProbeTest < ActiveSupport::TestCase
+       source[:media_type] == "application/pdf" &&
+         Base64.strict_decode64(source[:data]) == @probe.send(:synthetic_pdf) &&
+         extracted_data_schema[:properties].key?(:institution_name) &&
+-        extracted_data_schema[:required].empty? &&
++        extracted_data_schema[:required] == Provider::LlmConcept::PDF_PROCESSING_EXTRACTED_DATA_KEYS &&
+         !params[:system_].include?(AiHealth::Probe::PDF_TEST_INSTITUTION)
+     end.returns(response)
+     @probe.stubs(:anthropic_client).returns(stub(messages: messages))
+@@ -228,6 +253,59 @@ class AiHealth::ProbeTest < ActiveSupport::TestCase
+     assert result.passing?
+   end
+ 
++  test "bank statement probe exercises the real OpenAI transaction extractor and exact schema" do
++    payload = {
++      "bank_name" => AiHealth::Probe::PDF_TEST_INSTITUTION,
++      "account_holder" => "Health Check",
++      "account_number" => nil,
++      "statement_period" => { "start_date" => "2026-01-01", "end_date" => "2026-01-31" },
++      "opening_balance" => 100.0,
++      "closing_balance" => 125.0,
++      "transactions" => [
++        { "date" => "2026-01-10", "description" => "HEALTH CHECK DEPOSIT", "amount" => 50.0, "reference" => "HC-DEP", "category" => "Income" },
++        { "date" => "2026-01-20", "description" => "HEALTH CHECK PURCHASE", "amount" => -25.0, "reference" => "HC-PUR", "category" => "Test Expenses" }
++      ]
++    }
++    captured = nil
++    client = mock("openai_client")
++    client.expects(:chat).with do |params|
++      captured = params
++      true
++    end.returns({ "choices" => [ { "message" => { "content" => payload.to_json } } ] })
++    @probe.stubs(:openai_client).returns(client)
++
++    result = @probe.pdf_transaction_extraction(
++      provider: :openai,
++      endpoint: "https://api.openai.com/v1",
++      access_token: "token",
++      model: "gpt-4.1"
++    )
++
++    assert result.passing?
++    assert_equal "json_schema", captured.dig(:parameters, :response_format, :type)
++    assert_equal true, captured.dig(:parameters, :response_format, :json_schema, :strict)
++    assert_equal Provider::LlmConcept.bank_statement_json_schema,
++                 captured.dig(:parameters, :response_format, :json_schema, :schema)
++  end
++
++  test "bank statement probe reports a recognition mismatch when a transaction is wrong" do
++    result = AiHealth::Probe::PDF_TRANSACTION_TEST_EXPECTED_DATA.deep_dup
++    result[:transactions][1][:amount] = -20.0
++    Provider::Openai::BankStatementExtractor.any_instance.stubs(:extract).returns(result)
++    Rails.logger.stubs(:error)
++    DebugLogEntry.stubs(:capture)
++
++    probe_result = @probe.pdf_transaction_extraction(
++      provider: :openai,
++      endpoint: "https://api.openai.com/v1",
++      access_token: "token",
++      model: "gpt-4.1"
++    )
++
++    assert probe_result.failing?
++    assert_equal :recognition_mismatch, probe_result.failure_code
++  end
++
+   test "failed LLM probe writes a system-wide debug entry and Rails log without secrets" do
+     models = stub(list: { "data" => [ { "id" => "another-model" } ] })
+     @probe.stubs(:openai_client).returns(stub(models: models))
+diff --git a/test/models/provider/anthropic/bank_statement_extractor_test.rb b/test/models/provider/anthropic/bank_statement_extractor_test.rb
+index 20324622..b2edbc25 100644
+--- a/test/models/provider/anthropic/bank_statement_extractor_test.rb
++++ b/test/models/provider/anthropic/bank_statement_extractor_test.rb
+@@ -19,8 +19,8 @@ class Provider::Anthropic::BankStatementExtractorTest < ActiveSupport::TestCase
+           "opening_balance" => 1000.0,
+           "closing_balance" => 1500.0,
+           "transactions" => [
+-            { "date" => "2026-03-05", "description" => "Coffee", "amount" => -4.5 },
+-            { "date" => "2026-03-15", "description" => "Salary", "amount" => 3000.0, "reference" => "Payroll Mar" }
++            { "date" => "2026-03-05", "description" => "Coffee", "amount" => -4.5, "reference" => nil, "category" => nil },
++            { "date" => "2026-03-15", "description" => "Salary", "amount" => 3000.0, "reference" => "Payroll Mar", "category" => nil }
+           ]
+         }
+       )
+@@ -99,7 +99,11 @@ class Provider::Anthropic::BankStatementExtractorTest < ActiveSupport::TestCase
+         tool_use_block(
+           id: "toolu_1",
+           name: "report_bank_statement",
+-          input: { "transactions" => [ { "date" => "2026-03-05", "description" => "Coffee", "amount" => -4.5 } ] }
++          input: valid_payload(
++            transactions: [
++              { "date" => "2026-03-05", "description" => "Coffee", "amount" => -4.5, "reference" => nil, "category" => nil }
++            ]
++          )
+         )
+       ]
+     )
+@@ -117,6 +121,39 @@ class Provider::Anthropic::BankStatementExtractorTest < ActiveSupport::TestCase
+     assert_equal true, result[:truncated]
+   end
+ 
++  test "uses the canonical Sure schema for the Anthropic tool" do
++    response = build_response(content: [
++      tool_use_block(id: "toolu_1", name: "report_bank_statement", input: valid_payload)
++    ])
++    messages = mock("messages")
++    messages.expects(:create).with do |params|
++      params.dig(:tools, 0, :input_schema) == Provider::LlmConcept.bank_statement_json_schema
++    end.returns(response)
++    client = stub(messages: messages)
++
++    Provider::Anthropic::BankStatementExtractor.new(
++      client: client,
++      model: "claude-sonnet-4-6",
++      pdf_content: @pdf_content
++    ).extract
++  end
++
++  test "raises when the tool payload does not match the required schema" do
++    response = build_response(content: [
++      tool_use_block(id: "toolu_1", name: "report_bank_statement", input: { "transactions" => [] })
++    ])
++    client = stub_client(response)
++
++    error = assert_raises(Provider::Anthropic::Error) do
++      Provider::Anthropic::BankStatementExtractor.new(
++        client: client,
++        model: "claude-sonnet-4-6",
++        pdf_content: @pdf_content
++      ).extract
++    end
++    assert_match(/required schema/, error.message)
++  end
++
+   private
+     def stub_client(response)
+       messages = mock
+@@ -138,4 +175,16 @@ class Provider::Anthropic::BankStatementExtractorTest < ActiveSupport::TestCase
+     def tool_use_block(id:, name:, input:)
+       OpenStruct.new(type: :tool_use, id: id, name: name, input: input)
+     end
++
++    def valid_payload(transactions: [])
++      {
++        "bank_name" => "Bank of Example",
++        "account_holder" => "Jane Doe",
++        "account_number" => "1234",
++        "statement_period" => { "start_date" => "2026-03-01", "end_date" => "2026-03-31" },
++        "opening_balance" => 1000.0,
++        "closing_balance" => 1500.0,
++        "transactions" => transactions
++      }
++    end
+ end
+diff --git a/test/models/provider/anthropic/pdf_processor_test.rb b/test/models/provider/anthropic/pdf_processor_test.rb
+index 2b807d17..29af34d0 100644
+--- a/test/models/provider/anthropic/pdf_processor_test.rb
++++ b/test/models/provider/anthropic/pdf_processor_test.rb
+@@ -44,6 +44,7 @@ class Provider::Anthropic::PdfProcessorTest < ActiveSupport::TestCase
+ 
+     assert_equal "report_document_analysis", captured[:tool_choice][:name]
+     assert captured[:tool_choice][:disable_parallel_tool_use]
++    assert_equal Provider::LlmConcept.pdf_processing_json_schema, captured.dig(:tools, 0, :input_schema)
+ 
+     assert_equal "bank_statement", result.document_type
+     assert_equal "Bank of Example, Mar 2026 statement.", result.summary
+@@ -58,7 +59,7 @@ class Provider::Anthropic::PdfProcessorTest < ActiveSupport::TestCase
+         input: {
+           "document_type" => "alien_invasion_form",
+           "summary" => "Unknown.",
+-          "extracted_data" => {}
++          "extracted_data" => Provider::LlmConcept::PDF_PROCESSING_EXTRACTED_DATA_KEYS.index_with(nil)
+         }
+       )
+     ])
+@@ -73,6 +74,31 @@ class Provider::Anthropic::PdfProcessorTest < ActiveSupport::TestCase
+     assert_equal "other", result.document_type
+   end
+ 
++  test "rejects a tool response that does not match Sure's schema" do
++    fake_response = build_response(content: [
++      tool_use_block(
++        id: "toolu_invalid",
++        name: "report_document_analysis",
++        input: {
++          "document_type" => "bank_statement",
++          "summary" => "Incomplete.",
++          "extracted_data" => {}
++        }
++      )
++    ])
++    client = stub_client(fake_response)
++
++    error = assert_raises(Provider::Anthropic::Error) do
++      Provider::Anthropic::PdfProcessor.new(
++        client,
++        model: "claude-sonnet-4-6",
++        pdf_content: @pdf_content
++      ).process
++    end
++
++    assert_match(/Sure's schema/, error.message)
++  end
++
+   test "raises when pdf_content is blank" do
+     err = assert_raises(Provider::Anthropic::Error) do
+       Provider::Anthropic::PdfProcessor.new(
+diff --git a/test/models/provider/llm_concept_test.rb b/test/models/provider/llm_concept_test.rb
+new file mode 100644
+index 00000000..da583058
+--- /dev/null
++++ b/test/models/provider/llm_concept_test.rb
+@@ -0,0 +1,106 @@
++require "test_helper"
++
++class Provider::LlmConceptTest < ActiveSupport::TestCase
++  test "PDF processing schema requires the exact Sure result shape" do
++    schema = Provider::LlmConcept.pdf_processing_json_schema
++    extracted_data = schema.dig(:properties, :extracted_data)
++
++    assert_equal %w[document_type summary extracted_data], schema[:required]
++    assert_equal false, schema[:additionalProperties]
++    assert_equal Provider::LlmConcept::PDF_PROCESSING_EXTRACTED_DATA_KEYS, extracted_data[:required]
++    assert_equal false, extracted_data[:additionalProperties]
++  end
++
++  test "validates a complete PDF processing result" do
++    assert Provider::LlmConcept.valid_pdf_processing_result?(pdf_result)
++  end
++
++  test "rejects missing, additional, or incorrectly typed PDF fields" do
++    missing = valid_extracted_data.except("currency")
++    additional = valid_extracted_data.merge("unexpected" => true)
++    invalid_date = valid_extracted_data.merge("statement_period_start" => "03/01/2026")
++    invalid_count = valid_extracted_data.merge("transaction_count" => -1)
++    invalid_balance = valid_extracted_data.merge("closing_balance" => "1500.00")
++
++    [ missing, additional, invalid_date, invalid_count, invalid_balance ].each do |data|
++      assert_not Provider::LlmConcept.valid_pdf_processing_result?(pdf_result(extracted_data: data))
++    end
++  end
++
++  test "bank statement schema requires the exact Sure extraction shape" do
++    schema = Provider::LlmConcept.bank_statement_json_schema
++    period = schema.dig(:properties, :statement_period)
++    transaction = schema.dig(:properties, :transactions, :items)
++
++    assert_equal Provider::LlmConcept::BANK_STATEMENT_KEYS, schema[:required]
++    assert_equal false, schema[:additionalProperties]
++    assert_equal Provider::LlmConcept::BANK_STATEMENT_PERIOD_KEYS, period[:required]
++    assert_equal false, period[:additionalProperties]
++    assert_equal Provider::LlmConcept::BANK_STATEMENT_TRANSACTION_KEYS, transaction[:required]
++    assert_equal false, transaction[:additionalProperties]
++  end
++
++  test "validates a complete bank statement extraction payload" do
++    assert Provider::LlmConcept.valid_bank_statement_extraction_payload?(valid_bank_statement_payload)
++  end
++
++  test "rejects incomplete or incorrectly typed bank statement extraction payloads" do
++    payloads = [
++      valid_bank_statement_payload.except("bank_name"),
++      valid_bank_statement_payload.merge("unexpected" => true),
++      valid_bank_statement_payload.merge("statement_period" => { "start_date" => "03/01/2026", "end_date" => nil }),
++      valid_bank_statement_payload.merge("opening_balance" => "1000.00"),
++      valid_bank_statement_payload.merge("transactions" => [ valid_transaction.except("reference") ]),
++      valid_bank_statement_payload.merge("transactions" => [ valid_transaction.merge("date" => "03/05/2026") ]),
++      valid_bank_statement_payload.merge("transactions" => [ valid_transaction.merge("amount" => "-4.50") ])
++    ]
++
++    payloads.each do |payload|
++      assert_not Provider::LlmConcept.valid_bank_statement_extraction_payload?(payload)
++    end
++  end
++
++  private
++    def pdf_result(extracted_data: valid_extracted_data)
++      Provider::LlmConcept::PdfProcessingResult.new(
++        document_type: "bank_statement",
++        summary: "Bank of Example statement.",
++        extracted_data: extracted_data
++      )
++    end
++
++    def valid_extracted_data
++      {
++        "institution_name" => "Bank of Example",
++        "statement_period_start" => "2026-03-01",
++        "statement_period_end" => "2026-03-31",
++        "transaction_count" => 42,
++        "opening_balance" => 1000.0,
++        "closing_balance" => 1500.0,
++        "currency" => "USD",
++        "account_holder" => "Account Holder"
++      }
++    end
++
++    def valid_bank_statement_payload
++      {
++        "bank_name" => "Bank of Example",
++        "account_holder" => "Account Holder",
++        "account_number" => "1234",
++        "statement_period" => { "start_date" => "2026-03-01", "end_date" => "2026-03-31" },
++        "opening_balance" => 1000.0,
++        "closing_balance" => 1500.0,
++        "transactions" => [ valid_transaction ]
++      }
++    end
++
++    def valid_transaction
++      {
++        "date" => "2026-03-05",
++        "description" => "Coffee",
++        "amount" => -4.5,
++        "reference" => nil,
++        "category" => nil
++      }
++    end
++end
+diff --git a/test/models/provider/openai/bank_statement_extractor_test.rb b/test/models/provider/openai/bank_statement_extractor_test.rb
+index 0359e751..bd2e214e 100644
+--- a/test/models/provider/openai/bank_statement_extractor_test.rb
++++ b/test/models/provider/openai/bank_statement_extractor_test.rb
+@@ -21,15 +21,19 @@ class Provider::Openai::BankStatementExtractorTest < ActiveSupport::TestCase
+             "opening_balance" => 5000.00,
+             "closing_balance" => 4500.00,
+             "transactions" => [
+-              { "date" => "2024-01-15", "description" => "Coffee Shop", "amount" => -5.50 },
+-              { "date" => "2024-01-20", "description" => "Salary Deposit", "amount" => 3000.00 }
++              { "date" => "2024-01-15", "description" => "Coffee Shop", "amount" => -5.50, "reference" => nil, "category" => nil },
++              { "date" => "2024-01-20", "description" => "Salary Deposit", "amount" => 3000.00, "reference" => nil, "category" => nil }
+             ]
+           }.to_json
+         }
+       } ]
+     }
+ 
+-    @client.expects(:chat).returns(mock_response)
++    captured = nil
++    @client.expects(:chat).with do |params|
++      captured = params
++      true
++    end.returns(mock_response)
+ 
+     extractor = Provider::Openai::BankStatementExtractor.new(
+       client: @client,
+@@ -53,6 +57,11 @@ class Provider::Openai::BankStatementExtractorTest < ActiveSupport::TestCase
+     assert_equal "2024-01-15", first_txn[:date]
+     assert_equal "Coffee Shop", first_txn[:name]
+     assert_equal(-5.50, first_txn[:amount])
++
++    response_format = captured.dig(:parameters, :response_format)
++    assert_equal "json_schema", response_format[:type]
++    assert_equal true, response_format.dig(:json_schema, :strict)
++    assert_equal Provider::LlmConcept.bank_statement_json_schema, response_format.dig(:json_schema, :schema)
+   end
+ 
+   test "handles empty PDF content" do
+@@ -119,7 +128,8 @@ class Provider::Openai::BankStatementExtractorTest < ActiveSupport::TestCase
+     extractor = Provider::Openai::BankStatementExtractor.new(
+       client: @client,
+       pdf_content: "dummy",
+-      model: @model
++      model: @model,
++      custom_provider: true
+     )
+ 
+     # Mock multiple pages that will create multiple chunks
+@@ -158,7 +168,8 @@ class Provider::Openai::BankStatementExtractorTest < ActiveSupport::TestCase
+     extractor = Provider::Openai::BankStatementExtractor.new(
+       client: @client,
+       pdf_content: "dummy",
+-      model: @model
++      model: @model,
++      custom_provider: true
+     )
+ 
+     extractor.stubs(:extract_pages_from_pdf).returns([ "Page 1 text" ])
+@@ -170,7 +181,7 @@ class Provider::Openai::BankStatementExtractorTest < ActiveSupport::TestCase
+     assert_equal(-100.0, result[:transactions][2][:amount])
+   end
+ 
+-  test "handles malformed JSON response gracefully" do
++  test "raises on malformed JSON instead of silently returning no transactions" do
+     mock_response = {
+       "choices" => [ {
+         "message" => {
+@@ -189,9 +200,25 @@ class Provider::Openai::BankStatementExtractorTest < ActiveSupport::TestCase
+ 
+     extractor.stubs(:extract_pages_from_pdf).returns([ "Page 1 text" ])
+ 
+-    result = extractor.extract
++    error = assert_raises(Provider::Openai::Error) { extractor.extract }
++    assert_match(/Could not parse bank statement extraction response/, error.message)
++  end
++
++  test "raises when an official OpenAI response does not match the required schema" do
++    mock_response = {
++      "choices" => [ {
++        "message" => { "content" => { "transactions" => [] }.to_json }
++      } ]
++    }
++    @client.expects(:chat).returns(mock_response)
++    extractor = Provider::Openai::BankStatementExtractor.new(
++      client: @client,
++      pdf_content: "dummy",
++      model: @model
++    )
++    extractor.stubs(:extract_pages_from_pdf).returns([ "Page 1 text" ])
+ 
+-    # Should return empty transactions on parse error
+-    assert_equal [], result[:transactions]
++    error = assert_raises(Provider::Openai::Error) { extractor.extract }
++    assert_match(/required schema/, error.message)
+   end
+ end
+diff --git a/test/models/provider/openai/pdf_processor_test.rb b/test/models/provider/openai/pdf_processor_test.rb
+index cb57b818..95815b1a 100644
+--- a/test/models/provider/openai/pdf_processor_test.rb
++++ b/test/models/provider/openai/pdf_processor_test.rb
+@@ -97,7 +97,109 @@ class Provider::Openai::PdfProcessorTest < ActiveSupport::TestCase
+     assert_equal expected, processor.process
+   end
+ 
++  test "text mode uses Sure's strict schema with OpenAI" do
++    client = mock("openai_client")
++    client.expects(:chat).with do |request|
++      parameters = request[:parameters]
++      structured_output?(parameters[:response_format])
++    end.returns(pdf_response)
++
++    processor = Provider::Openai::PdfProcessor.new(
++      client,
++      model: "gpt-5.6-terra",
++      pdf_content: @pdf_content,
++      max_response_tokens: 512,
++      processing_mode: :text
++    )
++    processor.stubs(:extract_text_from_pdf).returns("Synthetic document text")
++
++    assert_equal "Synthetic PDF", processor.process.summary
++  end
++
++  test "vision mode uses Sure's strict schema, high image detail, and max_completion_tokens with OpenAI" do
++    client = mock("openai_client")
++    client.expects(:chat).with do |request|
++      parameters = request[:parameters]
++      image = parameters.dig(:messages, 1, :content, 0, :image_url)
++      parameters[:max_completion_tokens] == 512 &&
++        !parameters.key?(:max_tokens) &&
++        image[:detail] == "high" &&
++        structured_output?(parameters[:response_format])
++    end.returns(pdf_response)
++
++    processor = vision_processor(client)
++    processor.stubs(:convert_pdf_to_images).returns([ "encoded-page" ])
++
++    assert_equal "Synthetic PDF", processor.process.summary
++  end
++
++  test "vision mode keeps max_tokens for custom OpenAI-compatible providers" do
++    client = mock("openai_client")
++    client.expects(:chat).with do |request|
++      parameters = request[:parameters]
++      parameters[:max_tokens] == 512 &&
++        !parameters.key?(:max_completion_tokens) &&
++        !parameters.key?(:response_format)
++    end.returns(pdf_response)
++
++    processor = vision_processor(client, custom_provider: true)
++    processor.stubs(:convert_pdf_to_images).returns([ "encoded-page" ])
++
++    assert_equal "Synthetic PDF", processor.process.summary
++  end
++
++  test "official OpenAI rejects a response that does not match Sure's schema" do
++    client = stub(chat: {
++      "choices" => [
++        { "message" => { "content" => { document_type: "other", summary: "Incomplete", extracted_data: {} }.to_json } }
++      ]
++    })
++    processor = vision_processor(client)
++    processor.stubs(:convert_pdf_to_images).returns([ "encoded-page" ])
++
++    error = assert_raises(Provider::Openai::Error) { processor.process }
++    assert_match(/Sure's schema/, error.message)
++  end
++
+   private
++    def vision_processor(client, custom_provider: false)
++      Provider::Openai::PdfProcessor.new(
++        client,
++        model: "gpt-5.6-terra",
++        pdf_content: @pdf_content,
++        custom_provider: custom_provider,
++        max_response_tokens: 512,
++        processing_mode: :vision
++      )
++    end
++
++    def pdf_response
++      {
++        "choices" => [
++          {
++            "message" => {
++              "content" => {
++                document_type: "other",
++                summary: "Synthetic PDF",
++                extracted_data: empty_extracted_data
++              }.to_json
++            }
++          }
++        ]
++      }
++    end
++
++    def empty_extracted_data
++      Provider::LlmConcept::PDF_PROCESSING_EXTRACTED_DATA_KEYS.index_with(nil)
++    end
++
++    def structured_output?(format)
++      format&.dig(:type) == "json_schema" &&
++        format.dig(:json_schema, :name) == Provider::Openai::PdfProcessor::OUTPUT_SCHEMA_NAME &&
++        format.dig(:json_schema, :strict) == true &&
++        format.dig(:json_schema, :schema) == Provider::LlmConcept.pdf_processing_json_schema
++    end
++
+     def build_processor(error, trace)
+       client = mock
+       client.expects(:chat).raises(error)
+diff --git a/test/system/admin/system_health_test.rb b/test/system/admin/system_health_test.rb
+index 4b102dd4..c7721dcc 100644
+--- a/test/system/admin/system_health_test.rb
++++ b/test/system/admin/system_health_test.rb
+@@ -11,6 +11,7 @@ class Admin::SystemHealthTest < ApplicationSystemTestCase
+     AiHealth::Probe.any_instance.stubs(:llm).returns(probe_result(:passing))
+     AiHealth::Probe.any_instance.stubs(:pdf_text_extraction).returns(probe_result(:passing))
+     AiHealth::Probe.any_instance.stubs(:pdf_vision_processing).returns(probe_result(:passing))
++    AiHealth::Probe.any_instance.stubs(:pdf_transaction_extraction).returns(probe_result(:passing))
+     AiHealth::Probe.any_instance.stubs(:openai_vector_store).returns(probe_result(:passing))
+   end
+ 
+@@ -30,7 +31,8 @@ class Admin::SystemHealthTest < ApplicationSystemTestCase
+       assert_text "Live check passed"
+       assert_text "PDF text-extraction path"
+       assert_text "PDF vision/native path"
+-      assert_text "Synthetic PDF check passed", count: 2
++      assert_text "Bank-statement transaction extraction"
++      assert_text "Synthetic PDF check passed", count: 3
+       assert_text "Live checks passed"
+     end
+   end

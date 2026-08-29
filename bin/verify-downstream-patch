@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+readonly repo_root="$(git rev-parse --show-toplevel)"
+readonly upstream_marker="$repo_root/.upstream-commit"
+readonly patch_file="$repo_root/petrushin-ai-custom.patch"
+
+if [[ ! -s "$upstream_marker" ]]; then
+  printf 'Missing or empty upstream marker: %s\n' "$upstream_marker" >&2
+  exit 1
+fi
+
+if [[ ! -s "$patch_file" ]]; then
+  printf 'Missing or empty downstream patch: %s\n' "$patch_file" >&2
+  exit 1
+fi
+
+upstream_commit="$(tr -d '[:space:]' < "$upstream_marker")"
+if [[ ! "$upstream_commit" =~ ^[0-9a-f]{40}$ ]]; then
+  printf 'Expected a full 40-character SHA in %s.\n' "$upstream_marker" >&2
+  exit 1
+fi
+
+if ! git cat-file -e "${upstream_commit}^{commit}" 2>/dev/null; then
+  printf 'Upstream commit %s is not available locally. Fetch upstream first.\n' "$upstream_commit" >&2
+  exit 1
+fi
+
+if ! git merge-base --is-ancestor "$upstream_commit" HEAD; then
+  printf 'Recorded upstream commit %s is not an ancestor of HEAD.\n' "$upstream_commit" >&2
+  exit 1
+fi
+
+verify_tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/sure-patch-verify.XXXXXX")"
+verify_worktree="$verify_tmp_root/worktree"
+expected_patch="$verify_tmp_root/expected.patch"
+apply_log="$verify_tmp_root/apply.log"
+worktree_added=false
+
+cleanup() {
+  if [[ "$worktree_added" == true ]]; then
+    git worktree remove --force "$verify_worktree" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$verify_tmp_root"
+}
+trap cleanup EXIT
+
+git diff --binary "$upstream_commit" HEAD -- \
+  . \
+  ':(exclude)petrushin-ai-custom.patch' > "$expected_patch"
+
+if ! cmp -s "$expected_patch" "$patch_file"; then
+  printf 'Downstream patch is stale. Run bin/regenerate-downstream-patch and amend the commit.\n' >&2
+  exit 1
+fi
+
+git worktree add --detach "$verify_worktree" "$upstream_commit" >/dev/null
+worktree_added=true
+if ! git -C "$verify_worktree" apply --check --3way "$patch_file" >"$apply_log" 2>&1; then
+  printf 'Downstream patch does not apply cleanly to upstream %s:\n' "$upstream_commit" >&2
+  sed -n '1,120p' "$apply_log" >&2
+  exit 1
+fi
+
+if ! git -C "$verify_worktree" apply --index --3way "$patch_file" >"$apply_log" 2>&1; then
+  printf 'Downstream patch failed while applying to upstream %s:\n' "$upstream_commit" >&2
+  sed -n '1,120p' "$apply_log" >&2
+  exit 1
+fi
+
+if git -C "$verify_worktree" diff --cached --quiet; then
+  printf 'Downstream patch applied no changes to upstream %s.\n' "$upstream_commit" >&2
+  exit 1
+fi
+
+printf 'Downstream patch is current and applies cleanly to upstream %s.\n' "$upstream_commit"

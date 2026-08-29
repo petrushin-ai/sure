@@ -26,6 +26,14 @@ involved: [Discord](https://discord.gg/36ZGBsxYEK) • [Website](https://sure.am
 > This repository is a community fork of the now-abandoned Maybe Finance project. <br />
 > Learn more in their [final release](https://github.com/maybe-finance/maybe/releases/tag/v0.6.0) doc.
 
+## Petrushin AI fork maintenance
+
+This fork carries a documented set of production-required downstream patches.
+Before changing or updating it from `we-promise/sure`, follow
+[`docs/UPSTREAM.md`](docs/UPSTREAM.md). CI verifies that the complete
+downstream patch is current and can be reapplied to the recorded upstream
+commit.
+
 ## Backstory
 
 The [Maybe Finance](https://github.com/maybe-finance/maybe) (archived/abandoned repo) team spent most of 2021–2022 building a full-featured personal finance and wealth management app. It even included an “Ask an Advisor” feature that connected users with a real CFP/CFA — all included with your subscription.
