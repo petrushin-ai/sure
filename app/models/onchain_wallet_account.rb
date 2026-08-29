@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # One tracked asset, at one address, on one chain. Uniqueness is enforced by
-# three partial indexes — one per asset kind — because a native coin is
+# four partial indexes — one per asset kind — because a native coin is
 # identified by its address while a token is identified by its contract.
 class OnchainWalletAccount < ApplicationRecord
   belongs_to :onchain_wallet_item

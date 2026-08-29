@@ -55,3 +55,15 @@ pin "@floating-ui/utils/dom", to: "@floating-ui--utils--dom.js" # @0.2.9
 pin "d3-sankey" # @0.12.3
 pin "d3-array-src", to: "d3-array.js"
 pin "d3-shape-src", to: "d3-shape.js"
+pin "@tonconnect/ui", to: "@tonconnect--ui.js" # @3.0.0
+pin "@tonconnect/isomorphic-eventsource", to: "@tonconnect--isomorphic-eventsource.js" # @0.0.2
+pin "@tonconnect/isomorphic-fetch", to: "@tonconnect--isomorphic-fetch.js" # @0.0.3
+pin "@tonconnect/protocol", to: "@tonconnect--protocol.js" # @3.0.0
+pin "@tonconnect/sdk", to: "@tonconnect--sdk.js" # @4.0.0
+pin "buffer", to: "shims/browser_node_fallback.js"
+pin "classnames" # @2.5.1
+pin "crypto", to: "shims/browser_node_fallback.js"
+pin "deepmerge" # @4.3.1
+pin "tweetnacl" # @1.0.3
+pin "tweetnacl-util" # @0.15.1
+pin "ua-parser-js" # @1.0.41

@@ -25,6 +25,9 @@ class OnchainWalletItemsControllerTest < ActionDispatch::IntegrationTest
     # reading a settings page for the third time.
     assert_match I18n.t("settings.providers.onchain_wallet_panel.keyless_title"), response.body
     assert_match I18n.t("onchain_wallet_items.new_wallet.read_only_note"), response.body
+    assert_select "[data-controller='ton-connect']"
+    assert_select "button[data-action='ton-connect#connectWallet']"
+    assert_match tonconnect_manifest_url, response.body
   end
 
   test "the settings panel renders before anything is linked" do
@@ -43,6 +46,7 @@ class OnchainWalletItemsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_match OnchainTestHelper::FAKE_ADDRESS.first(6), response.body
     assert_match I18n.t("settings.providers.onchain_wallet_panel.etherscan_api_key_label"), response.body
+    assert_match I18n.t("settings.providers.onchain_wallet_panel.toncenter_api_key_label"), response.body
     assert_match I18n.t("settings.providers.onchain_wallet_panel.sync_start_date_label"), response.body
     assert_select "form[action=?]", sync_onchain_wallet_item_path(item)
     assert_select "a[href=?]", manage_onchain_wallet_item_path(item)
@@ -389,6 +393,16 @@ class OnchainWalletItemsControllerTest < ActionDispatch::IntegrationTest
 
     patch onchain_wallet_item_url(item), params: { onchain_wallet_item: { etherscan_api_key: "" } }
     assert_equal "abc123", item.reload.etherscan_api_key
+  end
+
+  test "update stores a TON Center key and keeps it when the field is left blank" do
+    item = create_onchain_wallet_item(family: @family)
+
+    patch onchain_wallet_item_url(item), params: { onchain_wallet_item: { toncenter_api_key: "ton123" } }
+    assert_equal "ton123", item.reload.toncenter_api_key
+
+    patch onchain_wallet_item_url(item), params: { onchain_wallet_item: { toncenter_api_key: "" } }
+    assert_equal "ton123", item.reload.toncenter_api_key
   end
 
   test "update stores the date before which transfers are ignored" do

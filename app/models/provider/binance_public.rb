@@ -41,6 +41,16 @@ class Provider::BinancePublic < Provider
   # enough and avoids surfacing transient depeg ticks from market data.
   USD_STABLECOINS = %w[USDT USDC BUSD DAI FDUSD TUSD USDP PYUSD BFUSD RWUSD].freeze
 
+  # Binance renamed TON to GRAM in July 2026. Sure exposes the current asset
+  # name while stitching the old TONUSDT candles to the new GRAMUSDT series,
+  # otherwise every pre-rename transfer would lose its historical value.
+  GRAM_BASE = "GRAM".freeze
+  GRAM_LEGACY_PAIR = "TONUSDT".freeze
+  GRAM_CURRENT_PAIR = "GRAMUSDT".freeze
+  GRAM_LEGACY_LAST_DATE = Date.new(2026, 6, 30)
+  GRAM_CURRENT_FIRST_DATE = Date.new(2026, 7, 2)
+  GRAM_TRANSITION_DATE = Date.new(2026, 7, 1)
+
   # Trailing separator between base and quote in a stored pair ticker
   # ("BTC-USD", "BTC/USD", "BTC_USD"), stripped so parse_ticker builds a valid
   # Binance pair.
@@ -197,63 +207,123 @@ class Provider::BinancePublic < Provider
         next stablecoin_prices(symbol, parsed, start_date, end_date, exchange_operating_mic)
       end
 
-      binance_pair = parsed[:binance_pair]
-      display_currency = parsed[:display_currency]
-      prices = []
-      cursor = start_date
-      seen_data = false
-
-      while cursor <= end_date
-        window_end = [ cursor + (KLINE_MAX_LIMIT - 1).days, end_date ].min
-
-        throttle_request
-        response = client.get("#{base_url}/api/v3/klines") do |req|
-          req.params["symbol"]    = binance_pair
-          req.params["interval"]  = "1d"
-          req.params["startTime"] = date_to_ms(cursor)
-          req.params["endTime"]   = date_to_ms(window_end) + MS_PER_DAY - 1
-          req.params["limit"]     = KLINE_MAX_LIMIT
-        end
-
-        batch = JSON.parse(response.body)
-
-        if batch.empty?
-          # Empty window. Two cases:
-          #   1. cursor is before the pair's listing date — keep advancing
-          #      until we hit the first window containing valid klines.
-          #      Critical for long-range imports (e.g. account sync from a
-          #      trade start date that predates the Binance listing).
-          #   2. We have already collected prices and this window is past
-          #      the end of available history — stop to avoid wasted calls
-          #      on delisted pairs.
-          break if seen_data
-        else
-          seen_data = true
-          batch.each do |row|
-            open_time_ms = row[0].to_i
-            close_price  = row[4].to_f
-            next if close_price <= 0
-
-            prices << Price.new(
-              symbol: symbol,
-              date: Time.at(open_time_ms / 1000).utc.to_date,
-              price: close_price,
-              currency: display_currency,
-              exchange_operating_mic: exchange_operating_mic
-            )
-          end
-        end
-
-        # Note: we intentionally do NOT break on a short (non-empty) batch.
-        # A window that straddles the pair's listing date legitimately returns
-        # fewer than KLINE_MAX_LIMIT rows while there is still valid data in
-        # subsequent windows.
-        cursor = window_end + 1.day
+      if parsed[:base] == GRAM_BASE && parsed[:display_currency] == "USD"
+        next gram_prices(symbol, start_date, end_date, exchange_operating_mic)
       end
 
-      prices
+      fetch_pair_prices(
+        symbol: symbol,
+        binance_pair: parsed[:binance_pair],
+        display_currency: parsed[:display_currency],
+        start_date: start_date,
+        end_date: end_date,
+        exchange_operating_mic: exchange_operating_mic
+      )
     end
   end
+
+  def fetch_pair_prices(symbol:, binance_pair:, display_currency:, start_date:, end_date:, exchange_operating_mic:)
+    prices = []
+    cursor = start_date
+    seen_data = false
+
+    while cursor <= end_date
+      window_end = [ cursor + (KLINE_MAX_LIMIT - 1).days, end_date ].min
+
+      throttle_request
+      response = client.get("#{base_url}/api/v3/klines") do |req|
+        req.params["symbol"]    = binance_pair
+        req.params["interval"]  = "1d"
+        req.params["startTime"] = date_to_ms(cursor)
+        req.params["endTime"]   = date_to_ms(window_end) + MS_PER_DAY - 1
+        req.params["limit"]     = KLINE_MAX_LIMIT
+      end
+
+      batch = JSON.parse(response.body)
+
+      if batch.empty?
+        # Empty window. Two cases:
+        #   1. cursor is before the pair's listing date — keep advancing
+        #      until we hit the first window containing valid klines.
+        #      Critical for long-range imports (e.g. account sync from a
+        #      trade start date that predates the Binance listing).
+        #   2. We have already collected prices and this window is past
+        #      the end of available history — stop to avoid wasted calls
+        #      on delisted pairs.
+        break if seen_data
+      else
+        seen_data = true
+        batch.each do |row|
+          open_time_ms = row[0].to_i
+          close_price  = row[4].to_f
+          next if close_price <= 0
+
+          prices << Price.new(
+            symbol: symbol,
+            date: Time.at(open_time_ms / 1000).utc.to_date,
+            price: close_price,
+            currency: display_currency,
+            exchange_operating_mic: exchange_operating_mic
+          )
+        end
+      end
+
+      # Note: we intentionally do NOT break on a short (non-empty) batch.
+      # A window that straddles the pair's listing date legitimately returns
+      # fewer than KLINE_MAX_LIMIT rows while there is still valid data in
+      # subsequent windows.
+      cursor = window_end + 1.day
+    end
+
+    prices
+    end
+
+  def gram_prices(symbol, start_date, end_date, exchange_operating_mic)
+    prices = []
+
+    if start_date <= GRAM_LEGACY_LAST_DATE
+      prices.concat(fetch_pair_prices(
+        symbol: symbol,
+        binance_pair: GRAM_LEGACY_PAIR,
+        display_currency: "USD",
+        start_date: start_date,
+        end_date: [ end_date, GRAM_LEGACY_LAST_DATE ].min,
+        exchange_operating_mic: exchange_operating_mic
+      ))
+    end
+
+    # Binance has no daily candle under either ticker on the one-day rename
+    # boundary. Carry forward the final TON close only for that exact day so
+    # an otherwise valid transfer is not valued at zero.
+    if (start_date..end_date).cover?(GRAM_TRANSITION_DATE)
+      legacy_close = prices.find { |price| price.date == GRAM_LEGACY_LAST_DATE }
+      legacy_close ||= fetch_pair_prices(
+        symbol: symbol,
+        binance_pair: GRAM_LEGACY_PAIR,
+        display_currency: "USD",
+        start_date: GRAM_LEGACY_LAST_DATE,
+        end_date: GRAM_LEGACY_LAST_DATE,
+        exchange_operating_mic: exchange_operating_mic
+      ).first
+
+      prices << legacy_close.with(date: GRAM_TRANSITION_DATE) if legacy_close
+    end
+
+    if end_date >= GRAM_CURRENT_FIRST_DATE
+      prices.concat(fetch_pair_prices(
+        symbol: symbol,
+        binance_pair: GRAM_CURRENT_PAIR,
+        display_currency: "USD",
+        start_date: [ start_date, GRAM_CURRENT_FIRST_DATE ].max,
+        end_date: end_date,
+        exchange_operating_mic: exchange_operating_mic
+      ))
+    end
+
+    prices.select { |price| (start_date..end_date).cover?(price.date) }.uniq(&:date).sort_by(&:date)
+  end
+
+  private :fetch_pair_prices, :gram_prices
 
   # Maps a user-visible ticker to the Binance pair symbol, base asset, and
   # display currency. Accepts:

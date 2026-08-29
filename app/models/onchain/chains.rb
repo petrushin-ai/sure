@@ -23,13 +23,12 @@ module Onchain
     # (see CreateOnchainWalletItemsAndAccounts). Registering a chain whose
     # tokens don't fit one of these would silently lose DB-level uniqueness,
     # so `register` refuses it.
-    INDEXED_TOKEN_KINDS = %w[erc20 spl].freeze
+    INDEXED_TOKEN_KINDS = %w[erc20 spl jetton].freeze
 
-    # Token kinds whose contract identifier carries no case: an EVM contract is
-    # hex, so 0xAbC and 0xabc are one token. An SPL mint is a Base58 public key
-    # where case is part of the value — downcasing one corrupts it, and two
-    # distinct mints can collide once folded.
-    CASE_INSENSITIVE_CONTRACT_KINDS = %w[erc20].freeze
+    # Token kinds whose contract identifier carries no case: EVM contracts and
+    # canonical TON raw addresses are hex. An SPL mint is Base58, where case is
+    # part of the value — downcasing one corrupts it.
+    CASE_INSENSITIVE_CONTRACT_KINDS = %w[erc20 jetton].freeze
 
     NativeAsset = Data.define(:symbol, :name, :decimals)
 
@@ -91,6 +90,7 @@ module Onchain
     ].freeze
 
     SOLANA = "solana"
+    TON = "ton"
 
     BUILTIN = [
       Definition.new(
@@ -118,6 +118,13 @@ module Onchain
         native: NativeAsset.new(symbol: "SOL", name: "Solana", decimals: 9),
         token_kind: "spl",
         adapter_class_name: "Onchain::SolanaAdapter",
+        adapter_options: {}
+      ),
+      Definition.new(
+        key: TON,
+        native: NativeAsset.new(symbol: "GRAM", name: "Gram", decimals: 9),
+        token_kind: "jetton",
+        adapter_class_name: "Onchain::TonAdapter",
         adapter_options: {}
       )
     ].freeze

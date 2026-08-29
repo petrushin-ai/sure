@@ -54,6 +54,19 @@ class OnchainWalletAccountTest < ActiveSupport::TestCase
     end
   end
 
+  test "the database rejects a duplicate Jetton master for one TON wallet" do
+    ton_item = create_onchain_wallet_item(family: @family)
+    attributes = {
+      chain: "ton", wallet_address: "0:#{"1" * 64}", asset_kind: "jetton",
+      contract_address: Onchain::TonAdapter::TRUSTED_JETTONS.keys.sole,
+      symbol: "USDT", decimals: 6, quantity: 1, currency: "USD"
+    }
+    ton_item.onchain_wallet_accounts.create!(**attributes)
+
+    duplicate = ton_item.onchain_wallet_accounts.new(**attributes.merge(quantity: 2))
+    assert_raises(ActiveRecord::RecordNotUnique) { duplicate.save!(validate: false) }
+  end
+
   test "the database rejects a token row with no contract address" do
     orphan = @item.onchain_wallet_accounts.new(
       chain: OnchainTestHelper::FAKE_CHAIN,

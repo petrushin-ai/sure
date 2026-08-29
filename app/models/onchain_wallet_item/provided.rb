@@ -19,6 +19,12 @@ module OnchainWalletItem::Provided
   end
 
   def onchain_credentials
-    { etherscan_api_key: etherscan_api_key.presence }
+    {
+      etherscan_api_key: etherscan_api_key.presence,
+      toncenter_api_key: toncenter_api_key.presence,
+      # TON Center's indexed history endpoint performs reliably only with an
+      # explicit lower time bound. Other adapters simply ignore this value.
+      sync_start_date: sync_start_date
+    }
   end
 end

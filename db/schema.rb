@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_29_104500) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_29_150000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pgcrypto"
@@ -1573,12 +1573,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_29_104500) do
     t.datetime "updated_at", null: false
     t.string "wallet_address", null: false
     t.index ["onchain_wallet_item_id", "chain", "wallet_address", "contract_address"], name: "index_onchain_wallet_accounts_unique_erc20", unique: true, where: "((asset_kind)::text = 'erc20'::text)"
+    t.index ["onchain_wallet_item_id", "chain", "wallet_address", "contract_address"], name: "index_onchain_wallet_accounts_unique_jetton", unique: true, where: "((asset_kind)::text = 'jetton'::text)"
     t.index ["onchain_wallet_item_id", "chain", "wallet_address", "contract_address"], name: "index_onchain_wallet_accounts_unique_spl", unique: true, where: "((asset_kind)::text = 'spl'::text)"
     t.index ["onchain_wallet_item_id", "chain", "wallet_address"], name: "index_onchain_wallet_accounts_on_item_and_address"
     t.index ["onchain_wallet_item_id", "chain", "wallet_address"], name: "index_onchain_wallet_accounts_unique_native", unique: true, where: "((asset_kind)::text = 'native'::text)"
     t.index ["onchain_wallet_item_id"], name: "index_onchain_wallet_accounts_on_onchain_wallet_item_id"
     t.check_constraint "asset_kind::text = 'native'::text OR contract_address IS NOT NULL", name: "chk_onchain_wallet_accounts_token_has_contract"
-    t.check_constraint "asset_kind::text = ANY (ARRAY['native'::character varying::text, 'erc20'::character varying::text, 'spl'::character varying::text])", name: "chk_onchain_wallet_accounts_known_asset_kind"
+    t.check_constraint "asset_kind::text = ANY (ARRAY['native'::character varying, 'erc20'::character varying, 'spl'::character varying, 'jetton'::character varying]::text[])", name: "chk_onchain_wallet_accounts_known_asset_kind"
   end
 
   create_table "onchain_wallet_items", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
@@ -1593,6 +1594,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_29_104500) do
     t.boolean "scheduled_for_deletion", default: false, null: false
     t.string "status", default: "good", null: false
     t.datetime "sync_start_date"
+    t.text "toncenter_api_key"
     t.datetime "updated_at", null: false
     t.index ["family_id"], name: "index_onchain_wallet_items_on_family_id"
     t.index ["status"], name: "index_onchain_wallet_items_on_status"

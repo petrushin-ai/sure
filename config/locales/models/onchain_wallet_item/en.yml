@@ -10,6 +10,7 @@ en:
       optimism: Optimism
       polygon: Polygon
       solana: Solana
+      ton: TON
     institution_name: Self-custody wallets
   onchain_wallet_item:
     movement:

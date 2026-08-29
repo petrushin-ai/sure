@@ -1,8 +1,10 @@
 # On-chain (self-custody) wallets
 
-Sure can track wallets you hold the keys to — Bitcoin, six EVM networks and
-Solana — from their **public addresses only**. Nothing is signed, no key or seed
-phrase is ever entered, and no API key is required for any chain.
+Sure can track wallets you hold the keys to — Bitcoin, six EVM networks, Solana
+and TON — from their **public addresses only**. Nothing is signed, no key or seed
+phrase is ever entered, and no API key is required for any chain. TON users can
+select an address through TonConnect instead of copying it by hand; Sure still
+stores only the public address.
 
 This document covers where the data comes from, what needs configuring, the
 limits you will hit, and how to diagnose a wallet that looks wrong.
@@ -78,6 +80,7 @@ listed, so the cause is visible without having to reproduce it.
 | Gnosis | Blockscout (`gnosis.blockscout.com`) | No | `BLOCKSCOUT_GNOSIS_URL` |
 | Solana | Public JSON-RPC (`api.mainnet-beta.solana.com`) | No | `SOLANA_RPC_URL` |
 | Solana token names | Jupiter token search (`lite-api.jup.ag`) | No | `SOLANA_TOKEN_LIST_URL` |
+| TON balances and history | [TON Center API v3](https://docs.ton.org/api/v3/overview) | No (optional) | `TONCENTER_URL` |
 
 Every override expects the base URL of a compatible instance, without a trailing
 slash — useful if you run your own indexer or node, or if a public endpoint rate
@@ -98,6 +101,18 @@ history cap. History is the paginated, rate-limited half of the work, so that is
 where a key actually helps. Leave the field empty unless you are being rate
 limited.
 
+### Optional TON Center key
+
+TON Center permits one request per second without a key and ten per second with
+a free key. Add it under **Settings → Providers → On-chain wallets → Advanced**;
+it is stored encrypted, per family, and sent only as the `X-API-Key` header.
+Leave it empty for occasional syncs. Add it when several TON addresses sync at
+once or point `TONCENTER_URL` at a compatible self-hosted TON indexer.
+
+Sure always passes the configured sync start date to TON history queries. When
+no date is configured, it still passes a bounded network-era start rather than
+asking the indexer for an unbounded active wallet history.
+
 ## Rate limits and request cost
 
 All the default endpoints are free and shared, so they throttle. Each client
@@ -109,10 +124,12 @@ address, the cost is roughly:
 | Bitcoin | 1 + up to 10 history pages |
 | EVM | 1 summary + up to 10 pages of transfers + up to 10 pages of token transfers |
 | Solana | ~2 + up to 25 transaction reads |
+| TON | 2 balance/asset requests + usually 2 bounded history requests (250 GRAM actions and 250 Jetton transfers by default) |
 
 History is capped by default at 10 pages per source — 250 transactions for
-Bitcoin, 10 pages per EVM collection — and at 25 transactions for Solana, which
-spends one request per transaction rather than per page. Wallets with more
+Bitcoin, 10 pages per EVM collection, 250 rows per TON history collection — and
+at 25 transactions for Solana, which spends one request per transaction rather
+than per page. Wallets with more
 history than that keep their **current balance correct** — balances come from an
 address summary, never from history — but their oldest transfers are not
 imported.
@@ -145,8 +162,10 @@ regardless. On EVM networks the tokens kept are ranked by the market cap the
 indexer reports, so real assets survive the cap and airdrops fall off the end.
 Solana RPC offers no such signal, so there the order is by mint address —
 arbitrary, but identical between syncs, which is what stops the cap from
-reshuffling a wallet every night. The cap is stated in the review screen and in
-Manage wallets whenever it applies.
+reshuffling a wallet every night. On TON the indexer bounds the Jetton-wallet
+list first; Sure then preselects only explicitly allowlisted master contracts
+(currently the official USDT master) and leaves every other Jetton unticked.
+The cap is stated in the review screen and in Manage wallets whenever it applies.
 
 Detecting which network an address belongs to costs **exactly one request per
 candidate network**, and never reads history. If an explorer is down during
@@ -157,8 +176,9 @@ whole flow; you can still pick it by hand.
 
 **Settings → Providers → On-chain wallets → Add wallet.**
 
-1. Paste the public address. Leave the network on "Detect automatically" unless
-   you know which one you want.
+1. Paste the public address. For TON, click **Connect TON wallet** to choose it
+   in Tonkeeper or another TonConnect-compatible wallet. Leave the network on
+   "Detect automatically" unless you know which one you want.
 2. If the address format belongs to several networks — every `0x` address is
    valid on all six EVM networks, and Bitcoin's Base58 shape overlaps Solana's —
    Sure probes each and asks you to choose, marking the ones where it found
@@ -173,6 +193,18 @@ whole flow; you can still pick it by hand.
    value of zero.
 
 Nothing is imported that you did not tick.
+
+### What TonConnect is allowed to do
+
+TonConnect is a one-time onboarding channel, not an ongoing custody or signing
+integration. Sure requests no `ton_proof`, signature or transaction, rejects a
+testnet account, takes the mainnet public address and immediately disconnects the
+dApp session before submitting the normal read-only form. A restored TonConnect
+session is also disconnected before showing the wallet picker, so a previous
+Sure login on a shared browser cannot silently supply its wallet.
+
+The manifest is public at `/tonconnect-manifest.json`, as TonConnect requires.
+It contains only the Sure origin, product name and public icon.
 
 ## Managing a wallet
 
@@ -207,7 +239,20 @@ of zero while their quantities were tracked correctly.
 So: **a zero next to a token you know is worth something almost always means the
 provider does not list that token, not that the balance is wrong.** Check the
 quantity, which is read straight from the chain. Native coins (BTC, ETH, SOL,
-POL, XDAI) and large-cap tokens are the well-covered case.
+GRAM, POL, XDAI) and large-cap tokens are the well-covered case.
+
+**Jetton identity is the master contract, never its symbol.** Anyone can create
+a Jetton called USDT or GRAM and publish plausible metadata. Sure canonicalises
+the master address, keeps scam/unverified metadata display-only and preselects
+only an explicit allowlist. Metadata with missing precision, or more than 18
+decimal places, is skipped instead of silently rounded. Long-tail Jettons can
+have a correct quantity and a zero value because Binance prices by symbol, not
+by TON master contract.
+
+**The native TON asset is GRAM.** Binance's old `TONUSDT` history ends on 30 June
+2026 and `GRAMUSDT` begins on 2 July. Sure stitches those series for the GRAM
+security and carries the final TON close across the single transition day, so
+pre-rename transfers keep their historical valuation.
 
 Pricing by contract address instead of by symbol would close most of the gap, and
 the data is already close at hand — the EVM indexer returns an exchange rate per
@@ -280,6 +325,15 @@ generic "something went wrong", which means a bug worth reporting.
 history methods; balances are kept and the history is marked incomplete. Set
 `SOLANA_RPC_URL` to your own node or a paid endpoint to get the transfers.
 
+**TON shows balances but no transfers.** TON history is best effort too. Add a
+TON Center key, narrow the sync start date, or use `TONCENTER_URL` with your own
+indexer. Current balances remain authoritative and the wallet is marked as
+having incomplete history.
+
+**A TON wallet is rejected after TonConnect.** Sure accepts mainnet (`-239`)
+only. Switch the wallet to mainnet and reconnect; testnet (`-3`) is deliberately
+not imported into a personal-finance account.
+
 **Solana times out entirely on a very large wallet.** `getTokenAccountsByOwner`
 returns every token account in one response, and the public endpoint struggles
 with wallets holding thousands of them (a well-known one has ~2,800). Same fix:
@@ -291,6 +345,10 @@ automatically. Use **Review tokens** and tick it.
 **A Solana token shows as `SPL:abcd…wxyz`.** The token list does not vouch for
 that mint, so Sure will not name or price it. Tick it anyway to track the
 quantity.
+
+**A TON token shows as `JETTON:abcd…wxyz`.** Its master metadata is missing,
+invalid or flagged. Sure will not let an arbitrary contract borrow a legitimate
+ticker and price; tick it only if you independently recognise the master.
 
 **Transfers appear with a value of 0 and are excluded from totals.** No price was
 available for that date yet. Once market data covers the range, the next sync

@@ -41,6 +41,18 @@ class OnchainWalletItemTest < ActiveSupport::TestCase
     assert_equal "abc", @item.reload.etherscan_api_key
   end
 
+  test "strips and passes the TON Center credential to chain adapters" do
+    @item.update!(toncenter_api_key: " ton-key ", sync_start_date: Date.new(2026, 1, 2))
+
+    credentials = @item.chain_adapter(OnchainTestHelper::FAKE_CHAIN).credentials
+    assert_equal "ton-key", @item.reload.toncenter_api_key
+    assert_equal "ton-key", credentials[:toncenter_api_key]
+    assert_equal Date.new(2026, 1, 2), credentials[:sync_start_date]
+
+    @item.update!(toncenter_api_key: "  ")
+    assert_nil @item.reload.toncenter_api_key
+  end
+
   test "passes the explorer credential to chain adapters" do
     @item.update!(etherscan_api_key: "abc")
 

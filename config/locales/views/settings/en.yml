@@ -427,7 +427,7 @@ en:
         coinbase: Import your Coinbase crypto holdings and track performance.
         binance: Sync all supported Binance account balances using a read-only API key.
         kraken: Sync Kraken balances and spot trade fills using a read-only API key.
-        onchain_wallet: Track self-custody Bitcoin, EVM and Solana wallets from their public addresses.
+        onchain_wallet: Track self-custody Bitcoin, EVM, Solana and TON wallets from their public addresses.
         snaptrade: Connect brokerage accounts via the SnapTrade aggregation network.
         trading212: Sync your Trading 212 investment portfolio using a read-only API key.
         ibkr: Sync Interactive Brokers investment accounts via Flex Query imports.
@@ -526,12 +526,16 @@ en:
         etherscan_api_key_placeholder: Paste an Etherscan API key
         etherscan_hint: Ethereum reads work without a key. Adding an Etherscan key only raises the rate limit for Ethereum.
         keep_etherscan_api_key: Leave blank to keep the existing key
+        keep_toncenter_api_key: Leave blank to keep the existing key
         manage_wallets: Manage wallets
         keyless_body: Sure only ever reads public chain data. No keys, seed phrases or signatures are involved, and nothing can be spent.
         keyless_title: Read-only, no keys required
         save: Save
         sync_start_date_hint: Transfers before this date are ignored. Leave blank to import everything the explorer reports.
         sync_start_date_label: Ignore transfers before
+        toncenter_api_key_label: TON Center API key (optional)
+        toncenter_api_key_placeholder: Paste a TON Center API key
+        toncenter_hint: TON reads work without a key at 1 request per second. A TON Center key raises the rate limit and remains server-side.
       enable_banking_panel:
         callback_url_instruction: "For the callback URL, use %{callback_url}."
         connection_error: Connection Error

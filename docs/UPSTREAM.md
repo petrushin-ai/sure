@@ -217,6 +217,31 @@ image publish. A stale or non-applicable patch is a hard failure.
   portfolio-level weight denominator, and materializes every combined exchange
   account without last-source-wins holding loss.
 
+### SURE-012 — Read-only TON/GRAM wallets with TonConnect onboarding
+
+- Source: direct owner requests in `#devops` thread `1788013521.324599`,
+  2026-08-29.
+- Status: active downstream product integration. It remains covered by the
+  repository's AGPLv3 source obligations; "proprietary" here means maintained
+  only in this downstream fork, not closed source for network users.
+- Purpose: add TON mainnet to the universal on-chain wallet model; canonicalise
+  raw, bounceable and non-bounceable addresses; import native GRAM and Jetton
+  balances plus bounded, idempotent transfer history through TON Center API v3;
+  identify Jettons by master contract and preselect only an explicit allowlist;
+  stitch Binance's historical `TONUSDT` series to `GRAMUSDT`; and let users pick
+  a mainnet wallet through TonConnect without ever requesting proof, signing,
+  transaction or key material. The TonConnect session is disconnected before
+  the public address enters the ordinary read-only linking flow.
+- Main conflict areas: `Onchain::Chains`, the TON address/adapter and TON Center
+  provider, `OnchainWalletItem` encrypted connection settings, partial asset
+  uniqueness indexes, the on-chain linking UI/importmap and manifest route,
+  `Provider::BinancePublic`, translations, tests and
+  [`docs/hosting/onchain-wallets.md`](hosting/onchain-wallets.md).
+- Retirement rule: remove only after upstream provides equivalent TON mainnet
+  address safety, native GRAM and Jetton identity/history semantics, optional
+  TON Center credentials and bounded queries, read-only TonConnect onboarding,
+  TON-to-GRAM price continuity, schema guarantees and regression coverage.
+
 If upstream absorbs a patch, record the upstream PR and commit here, compare
 behavior and tests, remove only the duplicated downstream implementation, and
 regenerate the patch. Do not silently delete a ledger entry.

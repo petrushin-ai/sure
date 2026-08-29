@@ -355,6 +355,48 @@ class Provider::BinancePublicTest < ActiveSupport::TestCase
     assert_in_delta 150.25, response.data.first.price
   end
 
+  test "GRAM history stitches the legacy TON pair to the current GRAM pair" do
+    legacy = Provider::SecurityConcept::Price.new(
+      symbol: "CRYPTO:GRAM", date: Date.new(2026, 6, 30), price: 1.5,
+      currency: "USD", exchange_operating_mic: "BNCX"
+    )
+    current = legacy.with(date: Date.new(2026, 7, 2), price: 1.7)
+    @provider.expects(:fetch_pair_prices).with(
+      symbol: "CRYPTO:GRAM", binance_pair: "TONUSDT", display_currency: "USD",
+      start_date: Date.new(2026, 6, 30), end_date: Date.new(2026, 6, 30),
+      exchange_operating_mic: "BNCX"
+    ).returns([ legacy ])
+    @provider.expects(:fetch_pair_prices).with(
+      symbol: "CRYPTO:GRAM", binance_pair: "GRAMUSDT", display_currency: "USD",
+      start_date: Date.new(2026, 7, 2), end_date: Date.new(2026, 7, 2),
+      exchange_operating_mic: "BNCX"
+    ).returns([ current ])
+
+    response = @provider.fetch_security_prices(
+      symbol: "CRYPTO:GRAM", exchange_operating_mic: "BNCX",
+      start_date: Date.new(2026, 6, 30), end_date: Date.new(2026, 7, 2)
+    )
+
+    assert response.success?
+    assert_equal [ Date.new(2026, 6, 30), Date.new(2026, 7, 1), Date.new(2026, 7, 2) ], response.data.map(&:date)
+    assert_equal [ 1.5, 1.5, 1.7 ], response.data.map(&:price)
+  end
+
+  test "current GRAM history never queries the delisted TON pair" do
+    @provider.expects(:fetch_pair_prices).with(
+      symbol: "GRAMUSD", binance_pair: "GRAMUSDT", display_currency: "USD",
+      start_date: Date.new(2026, 8, 1), end_date: Date.new(2026, 8, 2),
+      exchange_operating_mic: "BNCX"
+    ).returns([])
+
+    response = @provider.fetch_security_prices(
+      symbol: "GRAMUSD", exchange_operating_mic: "BNCX",
+      start_date: Date.new(2026, 8, 1), end_date: Date.new(2026, 8, 2)
+    )
+
+    assert response.success?
+  end
+
   # ================================
   #       Single price
   # ================================

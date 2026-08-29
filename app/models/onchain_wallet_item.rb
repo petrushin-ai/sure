@@ -10,6 +10,7 @@ class OnchainWalletItem < ApplicationRecord
 
   if encryption_ready?
     encrypts :etherscan_api_key
+    encrypts :toncenter_api_key
   end
 
   validates :name, presence: true
@@ -146,8 +147,12 @@ class OnchainWalletItem < ApplicationRecord
 
   private
     def strip_credentials
-      return unless etherscan_api_key_changed? && !etherscan_api_key.nil?
+      if etherscan_api_key_changed? && !etherscan_api_key.nil?
+        self.etherscan_api_key = etherscan_api_key.to_s.strip.presence
+      end
 
-      self.etherscan_api_key = etherscan_api_key.to_s.strip.presence
+      if toncenter_api_key_changed? && !toncenter_api_key.nil?
+        self.toncenter_api_key = toncenter_api_key.to_s.strip.presence
+      end
     end
 end

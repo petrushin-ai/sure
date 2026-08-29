@@ -4,7 +4,7 @@
 # downstream of a chain adapter needs to know which chain produced it.
 #
 # `kind` is the asset identity model, not the chain: "native" assets are
-# identified by their address alone, token kinds ("erc20", "spl") by their
+# identified by their address alone, token kinds ("erc20", "spl", "jetton") by their
 # contract/mint. It is what the partial unique indexes on
 # onchain_wallet_accounts key off.
 module Onchain

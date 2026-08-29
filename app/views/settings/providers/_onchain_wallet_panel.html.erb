@@ -40,6 +40,7 @@
     <%= render DS::Disclosure.new(title: t("settings.providers.onchain_wallet_panel.advanced"), align: :right) do %>
       <div class="pt-2 space-y-3">
         <p class="text-sm text-secondary"><%= t("settings.providers.onchain_wallet_panel.etherscan_hint") %></p>
+        <p class="text-sm text-secondary"><%= t("settings.providers.onchain_wallet_panel.toncenter_hint") %></p>
 
         <%= styled_form_with model: connection,
                              url: onchain_wallet_item_path(connection),
@@ -50,6 +51,12 @@
           <%= form.text_field :etherscan_api_key,
                               label: t("settings.providers.onchain_wallet_panel.etherscan_api_key_label"),
                               placeholder: connection.etherscan_api_key.present? ? t("settings.providers.onchain_wallet_panel.keep_etherscan_api_key") : t("settings.providers.onchain_wallet_panel.etherscan_api_key_placeholder"),
+                              type: :password,
+                              value: nil %>
+
+          <%= form.text_field :toncenter_api_key,
+                              label: t("settings.providers.onchain_wallet_panel.toncenter_api_key_label"),
+                              placeholder: connection.toncenter_api_key.present? ? t("settings.providers.onchain_wallet_panel.keep_toncenter_api_key") : t("settings.providers.onchain_wallet_panel.toncenter_api_key_placeholder"),
                               type: :password,
                               value: nil %>
 
