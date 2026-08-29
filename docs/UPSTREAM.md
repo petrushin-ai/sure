@@ -230,8 +230,11 @@ image publish. A stale or non-applicable patch is a hard failure.
   identify Jettons by master contract and preselect only an explicit allowlist;
   stitch Binance's historical `TONUSDT` series to `GRAMUSDT`; and let users pick
   a mainnet wallet through TonConnect without ever requesting proof, signing,
-  transaction or key material. The TonConnect session is disconnected before
-  the public address enters the ordinary read-only linking flow.
+  transaction or key material. Session restoration is disabled so an
+  unavailable bridge cannot block the picker or reuse another Sure login's
+  wallet on a shared browser; the modal opens directly from the user's click,
+  and the new session is disconnected before the public address enters the
+  ordinary read-only linking flow.
 - Main conflict areas: `Onchain::Chains`, the TON address/adapter and TON Center
   provider, `OnchainWalletItem` encrypted connection settings, partial asset
   uniqueness indexes, the on-chain linking UI/importmap and manifest route,
@@ -358,6 +361,10 @@ bin/rails zeitwerk:check
 Also run the full GitHub CI suite. Provider preflight must use a synthetic PDF
 with no customer data and must confirm exact metadata plus exact transaction
 values; successful HTTP status alone is insufficient.
+
+After changing JavaScript, do not let an older local `public/assets` build
+shadow the source during a system test. Precompile the candidate commit or move
+the generated directory aside for the test and restore it afterward.
 
 ### 4. Direct-main build and deploy
 

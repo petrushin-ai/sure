@@ -442,15 +442,16 @@ index 2dadf0f4..08465889 100644
        sync_based_summary(key)
 diff --git a/app/javascript/controllers/ton_connect_controller.js b/app/javascript/controllers/ton_connect_controller.js
 new file mode 100644
-index 00000000..ec4a242d
+index 00000000..002808fd
 --- /dev/null
 +++ b/app/javascript/controllers/ton_connect_controller.js
-@@ -0,0 +1,104 @@
+@@ -0,0 +1,126 @@
 +import { Controller } from "@hotwired/stimulus"
 +import { TonConnectUI } from "@tonconnect/ui"
 +
 +const TON_MAINNET_CHAIN = "-239"
 +const DISCONNECT_TIMEOUT_MS = 3000
++const MODAL_OPEN_TIMEOUT_MS = 8000
 +
 +// Uses TonConnect only as an address picker. Sure never configures ton_proof,
 +// signing or transaction requests, and closes the dApp session before sending
@@ -467,48 +468,53 @@ index 00000000..ec4a242d
 +  connect() {
 +    this.userInitiated = false
 +    this.finalizing = false
-+    this.tonConnectUi = new TonConnectUI({ manifestUrl: this.manifestUrlValue })
++    this.modalOpened = false
++    this.tonConnectUi = new TonConnectUI({
++      manifestUrl: this.manifestUrlValue,
++      // Sure only needs a public address. Restoring a persistent dApp session
++      // adds no product value, can cross Sure logins on a shared browser and
++      // may block forever while an unavailable bridge is contacted.
++      restoreConnection: false,
++    })
 +    this.unsubscribe = this.tonConnectUi.onStatusChange(
 +      (wallet) => this.handleStatusChange(wallet),
 +      () => this.showStatus(this.errorMessageValue),
 +    )
 +    this.unsubscribeModal = this.tonConnectUi.onModalStateChange((state) => {
-+      if (state.status !== "opened" && !this.finalizing) this.connectButtonTarget.disabled = false
++      this.modalOpened = state.status === "opened"
++      if (this.modalOpened) this.clearModalOpenTimeout()
++      if (!this.modalOpened && !this.finalizing) this.connectButtonTarget.disabled = false
 +    })
 +  }
 +
 +  disconnect() {
++    this.clearModalOpenTimeout()
 +    this.unsubscribe?.()
 +    this.unsubscribeModal?.()
 +  }
 +
-+  async connectWallet() {
-+    this.userInitiated = false
++  connectWallet() {
++    this.userInitiated = true
 +    this.finalizing = false
++    this.modalOpened = false
 +    this.connectButtonTarget.disabled = true
++    this.clearModalOpenTimeout()
 +
++    // Keep this call in the synchronous click stack. Waiting for a restored
++    // session first can deadlock the button and loses the mobile browser's user
++    // activation before it opens Wallet in Telegram.
 +    try {
-+      await this.tonConnectUi.connectionRestored
-+
-+      // TonConnect persists by browser origin, not by Sure user/family. Never
-+      // reuse a restored session that may belong to a previous login on a
-+      // shared browser; make this click choose a wallet explicitly.
-+      if (this.tonConnectUi.connected) await this.disconnectWalletSession()
-+
-+      // Set only after restoration and disconnection have settled. Otherwise a
-+      // late restored-status callback could race this click and submit the
-+      // previous browser user's wallet before the picker opens.
-+      this.userInitiated = true
-+      await this.tonConnectUi.openModal()
++      this.modalOpenTimeout = setTimeout(() => this.handleModalOpenFailure(), MODAL_OPEN_TIMEOUT_MS)
++      Promise.resolve(this.tonConnectUi.openModal()).catch(() => this.handleModalOpenFailure())
 +    } catch (_error) {
-+      this.showStatus(this.errorMessageValue)
-+      this.connectButtonTarget.disabled = false
-+      this.userInitiated = false
++      this.handleModalOpenFailure()
 +    }
 +  }
 +
 +  async handleStatusChange(wallet) {
 +    if (!wallet || !this.userInitiated || this.finalizing) return
++
++    this.clearModalOpenTimeout()
 +
 +    if (String(wallet.account.chain) !== TON_MAINNET_CHAIN) {
 +      this.finalizing = true
@@ -543,6 +549,22 @@ index 00000000..ec4a242d
 +      // The address handoff remains read-only even if a wallet bridge is
 +      // temporarily unreachable while the SDK clears its session.
 +    }
++  }
++
++  handleModalOpenFailure() {
++    this.clearModalOpenTimeout()
++    if (this.modalOpened || this.finalizing) return
++
++    this.showStatus(this.errorMessageValue)
++    this.connectButtonTarget.disabled = false
++    this.userInitiated = false
++  }
++
++  clearModalOpenTimeout() {
++    if (!this.modalOpenTimeout) return
++
++    clearTimeout(this.modalOpenTimeout)
++    this.modalOpenTimeout = null
 +  }
 +
 +  showStatus(message) {
@@ -6371,10 +6393,10 @@ index 40f62952..c7a14d5c 100644
    add_foreign_key "plaid_accounts", "plaid_items"
 diff --git a/docs/UPSTREAM.md b/docs/UPSTREAM.md
 new file mode 100644
-index 00000000..1dd79712
+index 00000000..e968015f
 --- /dev/null
 +++ b/docs/UPSTREAM.md
-@@ -0,0 +1,392 @@
+@@ -0,0 +1,399 @@
 +# Maintaining the Petrushin AI Sure fork
 +
 +This repository is a native GitHub fork of [`we-promise/sure`](https://github.com/we-promise/sure).
@@ -6607,8 +6629,11 @@ index 00000000..1dd79712
 +  identify Jettons by master contract and preselect only an explicit allowlist;
 +  stitch Binance's historical `TONUSDT` series to `GRAMUSDT`; and let users pick
 +  a mainnet wallet through TonConnect without ever requesting proof, signing,
-+  transaction or key material. The TonConnect session is disconnected before
-+  the public address enters the ordinary read-only linking flow.
++  transaction or key material. Session restoration is disabled so an
++  unavailable bridge cannot block the picker or reuse another Sure login's
++  wallet on a shared browser; the modal opens directly from the user's click,
++  and the new session is disconnected before the public address enters the
++  ordinary read-only linking flow.
 +- Main conflict areas: `Onchain::Chains`, the TON address/adapter and TON Center
 +  provider, `OnchainWalletItem` encrypted connection settings, partial asset
 +  uniqueness indexes, the on-chain linking UI/importmap and manifest route,
@@ -6735,6 +6760,10 @@ index 00000000..1dd79712
 +Also run the full GitHub CI suite. Provider preflight must use a synthetic PDF
 +with no customer data and must confirm exact metadata plus exact transaction
 +values; successful HTTP status alone is insufficient.
++
++After changing JavaScript, do not let an older local `public/assets` build
++shadow the source during a system test. Precompile the candidate commit or move
++the generated directory aside for the test and restore it afterward.
 +
 +### 4. Direct-main build and deploy
 +
@@ -7042,7 +7071,7 @@ index 00000000..57d3ab40
 +5. Confirm source diagnostics and compare the combined balance with OKX's
 +   account overview, accounting for positions below `$1`.
 diff --git a/docs/hosting/onchain-wallets.md b/docs/hosting/onchain-wallets.md
-index 333bcdf4..400d34d8 100644
+index 333bcdf4..4ea5cbc1 100644
 --- a/docs/hosting/onchain-wallets.md
 +++ b/docs/hosting/onchain-wallets.md
 @@ -1,8 +1,10 @@
@@ -7126,7 +7155,7 @@ index 333bcdf4..400d34d8 100644
  2. If the address format belongs to several networks — every `0x` address is
     valid on all six EVM networks, and Bitcoin's Base58 shape overlaps Solana's —
     Sure probes each and asks you to choose, marking the ones where it found
-@@ -174,6 +194,18 @@ whole flow; you can still pick it by hand.
+@@ -174,6 +194,19 @@ whole flow; you can still pick it by hand.
  
  Nothing is imported that you did not tick.
  
@@ -7135,9 +7164,10 @@ index 333bcdf4..400d34d8 100644
 +TonConnect is a one-time onboarding channel, not an ongoing custody or signing
 +integration. Sure requests no `ton_proof`, signature or transaction, rejects a
 +testnet account, takes the mainnet public address and immediately disconnects the
-+dApp session before submitting the normal read-only form. A restored TonConnect
-+session is also disconnected before showing the wallet picker, so a previous
-+Sure login on a shared browser cannot silently supply its wallet.
++dApp session before submitting the normal read-only form. Sure disables
++TonConnect session restoration entirely: the picker opens directly from the
++user's click, a stalled bridge cannot leave the button waiting indefinitely,
++and a previous Sure login on a shared browser cannot silently supply its wallet.
 +
 +The manifest is public at `/tonconnect-manifest.json`, as TonConnect requires.
 +It contains only the Sure origin, product name and public icon.
@@ -7145,7 +7175,7 @@ index 333bcdf4..400d34d8 100644
  ## Managing a wallet
  
  **Settings → Providers → On-chain wallets → Manage wallets.**
-@@ -207,7 +239,20 @@ of zero while their quantities were tracked correctly.
+@@ -207,7 +240,20 @@ of zero while their quantities were tracked correctly.
  So: **a zero next to a token you know is worth something almost always means the
  provider does not list that token, not that the balance is wrong.** Check the
  quantity, which is read straight from the chain. Native coins (BTC, ETH, SOL,
@@ -7167,7 +7197,7 @@ index 333bcdf4..400d34d8 100644
  
  Pricing by contract address instead of by symbol would close most of the gap, and
  the data is already close at hand — the EVM indexer returns an exchange rate per
-@@ -280,6 +325,15 @@ generic "something went wrong", which means a bug worth reporting.
+@@ -280,6 +326,15 @@ generic "something went wrong", which means a bug worth reporting.
  history methods; balances are kept and the history is marked incomplete. Set
  `SOLANA_RPC_URL` to your own node or a paid endpoint to get the transfers.
  
@@ -7183,7 +7213,7 @@ index 333bcdf4..400d34d8 100644
  **Solana times out entirely on a very large wallet.** `getTokenAccountsByOwner`
  returns every token account in one response, and the public endpoint struggles
  with wallets holding thousands of them (a well-known one has ~2,800). Same fix:
-@@ -292,6 +346,10 @@ automatically. Use **Review tokens** and tick it.
+@@ -292,6 +347,10 @@ automatically. Use **Review tokens** and tick it.
  that mint, so Sure will not name or price it. Tick it anyway to track the
  quantity.
  
@@ -9765,7 +9795,7 @@ index 4b102dd4..c7721dcc 100644
      end
    end
 diff --git a/test/system/onchain_wallets_test.rb b/test/system/onchain_wallets_test.rb
-index b3f27b04..ae358c5b 100644
+index b3f27b04..e63981fe 100644
 --- a/test/system/onchain_wallets_test.rb
 +++ b/test/system/onchain_wallets_test.rb
 @@ -62,6 +62,7 @@ class OnchainWalletsTest < ApplicationSystemTestCase
@@ -9776,6 +9806,42 @@ index b3f27b04..ae358c5b 100644
  
      fill_in I18n.t("onchain_wallet_items.new_wallet.address_label"), with: OnchainTestHelper::FAKE_ADDRESS
      click_on I18n.t("onchain_wallet_items.new_wallet.continue")
+@@ -84,6 +85,35 @@ class OnchainWalletsTest < ApplicationSystemTestCase
+     assert_equal %w[FAKE USDC], OnchainWalletAccount.order(:symbol).pluck(:symbol)
+   end
+ 
++  test "TON Connect opens from the click without waiting for session restoration" do
++    visit settings_providers_path
++    open_onchain_panel
++    click_on I18n.t("settings.providers.onchain_wallet_panel.add_wallet")
++    assert_button I18n.t("onchain_wallet_items.new_wallet.ton_connect")
++
++    page.execute_script <<~JS
++      const button = [...document.querySelectorAll('button[data-action="ton-connect#connectWallet"]')]
++        .find((candidate) => candidate.offsetParent !== null)
++      const element = button.closest('[data-controller~="ton-connect"]')
++      const controller = window.Stimulus.getControllerForElementAndIdentifier(element, "ton-connect")
++      window.tonConnectModalOpened = false
++      controller.tonConnectUi = {
++        // A restored connection that never settles reproduced the production
++        // dead button. The picker must not depend on this promise at all.
++        connectionRestored: new Promise(() => {}),
++        connected: false,
++        openModal: () => {
++          window.tonConnectModalOpened = true
++          return Promise.resolve()
++        },
++      }
++    JS
++
++    click_on I18n.t("onchain_wallet_items.new_wallet.ton_connect")
++
++    assert page.evaluate_script("window.tonConnectModalOpened")
++  end
++
+   test "managing a wallet reviews its tokens and disconnects one asset" do
+     item = create_onchain_wallet_item(family: families(:dylan_family))
+     native = create_onchain_wallet_account(item: item)
 diff --git a/vendor/javascript/@tonconnect--isomorphic-eventsource.js b/vendor/javascript/@tonconnect--isomorphic-eventsource.js
 new file mode 100644
 index 00000000..7338749b

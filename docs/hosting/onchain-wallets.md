@@ -199,9 +199,10 @@ Nothing is imported that you did not tick.
 TonConnect is a one-time onboarding channel, not an ongoing custody or signing
 integration. Sure requests no `ton_proof`, signature or transaction, rejects a
 testnet account, takes the mainnet public address and immediately disconnects the
-dApp session before submitting the normal read-only form. A restored TonConnect
-session is also disconnected before showing the wallet picker, so a previous
-Sure login on a shared browser cannot silently supply its wallet.
+dApp session before submitting the normal read-only form. Sure disables
+TonConnect session restoration entirely: the picker opens directly from the
+user's click, a stalled bridge cannot leave the button waiting indefinitely,
+and a previous Sure login on a shared browser cannot silently supply its wallet.
 
 The manifest is public at `/tonconnect-manifest.json`, as TonConnect requires.
 It contains only the Sure origin, product name and public icon.

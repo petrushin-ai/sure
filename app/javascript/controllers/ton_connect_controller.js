@@ -3,6 +3,7 @@ import { TonConnectUI } from "@tonconnect/ui"
 
 const TON_MAINNET_CHAIN = "-239"
 const DISCONNECT_TIMEOUT_MS = 3000
+const MODAL_OPEN_TIMEOUT_MS = 8000
 
 // Uses TonConnect only as an address picker. Sure never configures ton_proof,
 // signing or transaction requests, and closes the dApp session before sending
@@ -19,48 +20,53 @@ export default class extends Controller {
   connect() {
     this.userInitiated = false
     this.finalizing = false
-    this.tonConnectUi = new TonConnectUI({ manifestUrl: this.manifestUrlValue })
+    this.modalOpened = false
+    this.tonConnectUi = new TonConnectUI({
+      manifestUrl: this.manifestUrlValue,
+      // Sure only needs a public address. Restoring a persistent dApp session
+      // adds no product value, can cross Sure logins on a shared browser and
+      // may block forever while an unavailable bridge is contacted.
+      restoreConnection: false,
+    })
     this.unsubscribe = this.tonConnectUi.onStatusChange(
       (wallet) => this.handleStatusChange(wallet),
       () => this.showStatus(this.errorMessageValue),
     )
     this.unsubscribeModal = this.tonConnectUi.onModalStateChange((state) => {
-      if (state.status !== "opened" && !this.finalizing) this.connectButtonTarget.disabled = false
+      this.modalOpened = state.status === "opened"
+      if (this.modalOpened) this.clearModalOpenTimeout()
+      if (!this.modalOpened && !this.finalizing) this.connectButtonTarget.disabled = false
     })
   }
 
   disconnect() {
+    this.clearModalOpenTimeout()
     this.unsubscribe?.()
     this.unsubscribeModal?.()
   }
 
-  async connectWallet() {
-    this.userInitiated = false
+  connectWallet() {
+    this.userInitiated = true
     this.finalizing = false
+    this.modalOpened = false
     this.connectButtonTarget.disabled = true
+    this.clearModalOpenTimeout()
 
+    // Keep this call in the synchronous click stack. Waiting for a restored
+    // session first can deadlock the button and loses the mobile browser's user
+    // activation before it opens Wallet in Telegram.
     try {
-      await this.tonConnectUi.connectionRestored
-
-      // TonConnect persists by browser origin, not by Sure user/family. Never
-      // reuse a restored session that may belong to a previous login on a
-      // shared browser; make this click choose a wallet explicitly.
-      if (this.tonConnectUi.connected) await this.disconnectWalletSession()
-
-      // Set only after restoration and disconnection have settled. Otherwise a
-      // late restored-status callback could race this click and submit the
-      // previous browser user's wallet before the picker opens.
-      this.userInitiated = true
-      await this.tonConnectUi.openModal()
+      this.modalOpenTimeout = setTimeout(() => this.handleModalOpenFailure(), MODAL_OPEN_TIMEOUT_MS)
+      Promise.resolve(this.tonConnectUi.openModal()).catch(() => this.handleModalOpenFailure())
     } catch (_error) {
-      this.showStatus(this.errorMessageValue)
-      this.connectButtonTarget.disabled = false
-      this.userInitiated = false
+      this.handleModalOpenFailure()
     }
   }
 
   async handleStatusChange(wallet) {
     if (!wallet || !this.userInitiated || this.finalizing) return
+
+    this.clearModalOpenTimeout()
 
     if (String(wallet.account.chain) !== TON_MAINNET_CHAIN) {
       this.finalizing = true
@@ -95,6 +101,22 @@ export default class extends Controller {
       // The address handoff remains read-only even if a wallet bridge is
       // temporarily unreachable while the SDK clears its session.
     }
+  }
+
+  handleModalOpenFailure() {
+    this.clearModalOpenTimeout()
+    if (this.modalOpened || this.finalizing) return
+
+    this.showStatus(this.errorMessageValue)
+    this.connectButtonTarget.disabled = false
+    this.userInitiated = false
+  }
+
+  clearModalOpenTimeout() {
+    if (!this.modalOpenTimeout) return
+
+    clearTimeout(this.modalOpenTimeout)
+    this.modalOpenTimeout = null
   }
 
   showStatus(message) {
