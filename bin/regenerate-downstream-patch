@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+readonly repo_root="$(git rev-parse --show-toplevel)"
+readonly upstream_marker="$repo_root/.upstream-commit"
+readonly patch_file="$repo_root/petrushin-ai-custom.patch"
+
+if [[ ! -s "$upstream_marker" ]]; then
+  printf 'Missing or empty upstream marker: %s\n' "$upstream_marker" >&2
+  exit 1
+fi
+
+upstream_commit="$(tr -d '[:space:]' < "$upstream_marker")"
+if [[ ! "$upstream_commit" =~ ^[0-9a-f]{40}$ ]]; then
+  printf 'Expected a full 40-character SHA in %s.\n' "$upstream_marker" >&2
+  exit 1
+fi
+
+if ! git cat-file -e "${upstream_commit}^{commit}" 2>/dev/null; then
+  printf 'Upstream commit %s is not available locally. Fetch upstream first.\n' "$upstream_commit" >&2
+  exit 1
+fi
+
+patch_tmp_file="$(mktemp "${TMPDIR:-/tmp}/sure-downstream-patch.XXXXXX")"
+trap 'rm -f "$patch_tmp_file"' EXIT
+
+git diff --binary "$upstream_commit" HEAD -- \
+  . \
+  ':(exclude)petrushin-ai-custom.patch' > "$patch_tmp_file"
+
+if [[ ! -s "$patch_tmp_file" ]]; then
+  printf 'Refusing to write an empty downstream patch.\n' >&2
+  exit 1
+fi
+
+mv "$patch_tmp_file" "$patch_file"
+printf 'Regenerated %s from upstream %s to HEAD %s.\n' \
+  "$patch_file" "$upstream_commit" "$(git rev-parse HEAD)"

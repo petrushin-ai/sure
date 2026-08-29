@@ -4,6 +4,19 @@ on:
   workflow_call:
 
 jobs:
+  downstream_patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code and upstream ancestry
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify Petrushin AI downstream patch
+        run: bin/verify-downstream-patch
+
   scan_ruby:
     runs-on: ubuntu-latest
     timeout-minutes: 10
