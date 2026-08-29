@@ -17,6 +17,11 @@ Later syncs update balances, holdings and transactions but never overwrite the
 chosen account name. Renaming a connection also leaves an already imported
 account name unchanged.
 
+Saved credentials are never rendered back into the form. The settings panel
+shows an explicit encrypted-credentials indicator instead; blank key fields on
+an existing connection mean "keep the saved values", not "credentials are
+missing".
+
 Each key produces one combined Sure account containing all supported Binance
 balance sources listed below. This avoids double counting between source types
 while keeping different API keys in separate Sure accounts.
@@ -43,7 +48,11 @@ Products that are not enabled on the Binance account may reject their balance
 endpoint. Sure records each source status in the provider payload and under
 **Settings → Debug logs**. A temporary failure never turns the affected source
 into a zero balance: its last successful assets are kept until the source can be
-read again. A sync fails outright only when every balance source fails.
+read again. The Spot account endpoint is the base credential/IP check. Once it
+succeeds, a permission denial from Portfolio Margin, Options or another
+optional product is treated as source-specific unavailability instead of an
+invalid key for the entire connection. A sync fails outright when the base
+credential check fails or every balance source fails.
 
 ## Minimum balance
 

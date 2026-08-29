@@ -21,7 +21,7 @@ class BinanceItem::FundingImporter
     end
 
     { assets: assets, raw: raw, source: "funding" }
-  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
+  rescue Provider::Binance::RateLimitError
     raise
   rescue => e
     Rails.logger.error "BinanceItem::FundingImporter #{binance_item.id} - #{e.message}"

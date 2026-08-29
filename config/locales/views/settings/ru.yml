@@ -286,6 +286,7 @@ ru:
         api_secret_label: Секретный ключ API
         api_secret_placeholder: Вставьте ваш секретный ключ API Binance
         keep_api_secret_placeholder: Оставьте пустым, чтобы сохранить текущий секретный ключ
+        credentials_saved: Данные доступа сохранены и зашифрованы. Оставьте оба поля пустыми, чтобы не менять их.
         connect_button: Подключить Binance
         setup_accounts: Настроить счёт
         disconnect: Отключить

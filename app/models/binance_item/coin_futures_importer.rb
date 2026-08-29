@@ -14,7 +14,7 @@ class BinanceItem::CoinFuturesImporter
     assets = Array(raw["assets"]).filter_map { |asset| normalize(asset) }
 
     { assets: assets, raw: raw, source: "coin_futures" }
-  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
+  rescue Provider::Binance::RateLimitError
     raise
   rescue => e
     Rails.logger.error "BinanceItem::CoinFuturesImporter #{binance_item.id} - #{e.message}"

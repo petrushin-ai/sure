@@ -16,7 +16,7 @@ class BinanceItem::PortfolioMarginImporter
     begin
       raw = provider.get_portfolio_margin_pro_balance
       return result(raw, mode: "pro")
-    rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
+    rescue Provider::Binance::RateLimitError
       raise
     rescue => e
       errors << "pro: #{e.message}"
@@ -25,7 +25,7 @@ class BinanceItem::PortfolioMarginImporter
     begin
       raw = provider.get_portfolio_margin_balance
       return result(raw, mode: "classic")
-    rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
+    rescue Provider::Binance::RateLimitError
       raise
     rescue => e
       errors << "classic: #{e.message}"

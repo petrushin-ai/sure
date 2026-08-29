@@ -549,7 +549,7 @@ index 7843dfd2..a38bccf6 100644
  end
 diff --git a/app/models/binance_item/coin_futures_importer.rb b/app/models/binance_item/coin_futures_importer.rb
 new file mode 100644
-index 00000000..9bfcd6be
+index 00000000..8c9f276c
 --- /dev/null
 +++ b/app/models/binance_item/coin_futures_importer.rb
 @@ -0,0 +1,40 @@
@@ -569,7 +569,7 @@ index 00000000..9bfcd6be
 +    assets = Array(raw["assets"]).filter_map { |asset| normalize(asset) }
 +
 +    { assets: assets, raw: raw, source: "coin_futures" }
-+  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++  rescue Provider::Binance::RateLimitError
 +    raise
 +  rescue => e
 +    Rails.logger.error "BinanceItem::CoinFuturesImporter #{binance_item.id} - #{e.message}"
@@ -594,14 +594,14 @@ index 00000000..9bfcd6be
 +    end
 +end
 diff --git a/app/models/binance_item/earn_importer.rb b/app/models/binance_item/earn_importer.rb
-index 111e054e..3edbf44f 100644
+index 111e054e..8a5f9b3c 100644
 --- a/app/models/binance_item/earn_importer.rb
 +++ b/app/models/binance_item/earn_importer.rb
 @@ -42,6 +42,8 @@ class BinanceItem::EarnImporter
        raw: { "flexible" => flexible_raw, "locked" => locked_raw },
        source: "earn"
      }
-+  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++  rescue Provider::Binance::RateLimitError
 +    raise
    rescue => e
      Rails.logger.error "BinanceItem::EarnImporter #{binance_item.id} - #{e.message}"
@@ -610,7 +610,7 @@ index 111e054e..3edbf44f 100644
  
      def fetch_flexible
        provider.get_simple_earn_flexible
-+    rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++    rescue Provider::Binance::RateLimitError
 +      raise
      rescue => e
        @errors["flexible"] = e.message
@@ -619,14 +619,14 @@ index 111e054e..3edbf44f 100644
  
      def fetch_locked
        provider.get_simple_earn_locked
-+    rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++    rescue Provider::Binance::RateLimitError
 +      raise
      rescue => e
        @errors["locked"] = e.message
        Rails.logger.warn "BinanceItem::EarnImporter #{binance_item.id} - locked failed: #{e.message}"
 diff --git a/app/models/binance_item/funding_importer.rb b/app/models/binance_item/funding_importer.rb
 new file mode 100644
-index 00000000..6e2ca8fb
+index 00000000..3596f6d6
 --- /dev/null
 +++ b/app/models/binance_item/funding_importer.rb
 @@ -0,0 +1,41 @@
@@ -653,7 +653,7 @@ index 00000000..6e2ca8fb
 +    end
 +
 +    { assets: assets, raw: raw, source: "funding" }
-+  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++  rescue Provider::Binance::RateLimitError
 +    raise
 +  rescue => e
 +    Rails.logger.error "BinanceItem::FundingImporter #{binance_item.id} - #{e.message}"
@@ -672,14 +672,14 @@ index 00000000..6e2ca8fb
 +    end
 +end
 diff --git a/app/models/binance_item/futures_importer.rb b/app/models/binance_item/futures_importer.rb
-index 8371d377..1ba5d2fa 100644
+index 8371d377..d4733a7e 100644
 --- a/app/models/binance_item/futures_importer.rb
 +++ b/app/models/binance_item/futures_importer.rb
 @@ -38,6 +38,8 @@ class BinanceItem::FuturesImporter
      end
  
      { assets: assets, raw: raw, source: "futures" }
-+  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++  rescue Provider::Binance::RateLimitError
 +    raise
    rescue => e
      Rails.logger.error "BinanceItem::FuturesImporter #{binance_item.id} - #{e.message}"
@@ -942,7 +942,7 @@ index 5490a361..978cd1cd 100644
  end
 diff --git a/app/models/binance_item/isolated_margin_importer.rb b/app/models/binance_item/isolated_margin_importer.rb
 new file mode 100644
-index 00000000..0506e88a
+index 00000000..96a739d2
 --- /dev/null
 +++ b/app/models/binance_item/isolated_margin_importer.rb
 @@ -0,0 +1,47 @@
@@ -963,7 +963,7 @@ index 00000000..0506e88a
 +    assets = Array(raw["assets"]).flat_map { |account| parse_account(account) }
 +
 +    { assets: assets, raw: raw, source: "isolated_margin" }
-+  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++  rescue Provider::Binance::RateLimitError
 +    raise
 +  rescue => e
 +    Rails.logger.error "BinanceItem::IsolatedMarginImporter #{binance_item.id} - #{e.message}"
@@ -994,21 +994,21 @@ index 00000000..0506e88a
 +    end
 +end
 diff --git a/app/models/binance_item/margin_importer.rb b/app/models/binance_item/margin_importer.rb
-index 3079a6ba..5a467d88 100644
+index 3079a6ba..a0ab360b 100644
 --- a/app/models/binance_item/margin_importer.rb
 +++ b/app/models/binance_item/margin_importer.rb
 @@ -14,6 +14,8 @@ class BinanceItem::MarginImporter
      raw = provider.get_margin_account
      assets = parse_assets(raw["userAssets"] || [])
      { assets: assets, raw: raw, source: "margin" }
-+  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++  rescue Provider::Binance::RateLimitError
 +    raise
    rescue => e
      Rails.logger.error "BinanceItem::MarginImporter #{binance_item.id} - #{e.message}"
      { assets: [], raw: nil, source: "margin", error: e.message }
 diff --git a/app/models/binance_item/options_importer.rb b/app/models/binance_item/options_importer.rb
 new file mode 100644
-index 00000000..4d9108bb
+index 00000000..243e50fc
 --- /dev/null
 +++ b/app/models/binance_item/options_importer.rb
 @@ -0,0 +1,34 @@
@@ -1039,7 +1039,7 @@ index 00000000..4d9108bb
 +    end
 +
 +    { assets: assets, raw: raw, source: "options" }
-+  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++  rescue Provider::Binance::RateLimitError
 +    raise
 +  rescue => e
 +    Rails.logger.error "BinanceItem::OptionsImporter #{binance_item.id} - #{e.message}"
@@ -1048,7 +1048,7 @@ index 00000000..4d9108bb
 +end
 diff --git a/app/models/binance_item/portfolio_margin_importer.rb b/app/models/binance_item/portfolio_margin_importer.rb
 new file mode 100644
-index 00000000..8b910c8e
+index 00000000..79efaa27
 --- /dev/null
 +++ b/app/models/binance_item/portfolio_margin_importer.rb
 @@ -0,0 +1,66 @@
@@ -1070,7 +1070,7 @@ index 00000000..8b910c8e
 +    begin
 +      raw = provider.get_portfolio_margin_pro_balance
 +      return result(raw, mode: "pro")
-+    rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++    rescue Provider::Binance::RateLimitError
 +      raise
 +    rescue => e
 +      errors << "pro: #{e.message}"
@@ -1079,7 +1079,7 @@ index 00000000..8b910c8e
 +    begin
 +      raw = provider.get_portfolio_margin_balance
 +      return result(raw, mode: "classic")
-+    rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++    rescue Provider::Binance::RateLimitError
 +      raise
 +    rescue => e
 +      errors << "classic: #{e.message}"
@@ -1133,7 +1133,7 @@ index eb04ab67..a873a0cb 100644
      { assets: [], raw: nil, source: "spot", error: e.message }
 diff --git a/app/models/binance_item/yield_asset_importer.rb b/app/models/binance_item/yield_asset_importer.rb
 new file mode 100644
-index 00000000..fd37c1bd
+index 00000000..11f0118d
 --- /dev/null
 +++ b/app/models/binance_item/yield_asset_importer.rb
 @@ -0,0 +1,57 @@
@@ -1165,7 +1165,7 @@ index 00000000..fd37c1bd
 +    }
 +    result[:error] = errors.values.join("; ") if bfusd.nil? && rwusd.nil?
 +    result
-+  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++  rescue Provider::Binance::RateLimitError
 +    raise
 +  rescue => e
 +    Rails.logger.error "BinanceItem::YieldAssetImporter #{binance_item.id} - #{e.message}"
@@ -1176,7 +1176,7 @@ index 00000000..fd37c1bd
 +
 +    def fetch(name)
 +      yield
-+    rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
++    rescue Provider::Binance::RateLimitError
 +      raise
 +    rescue => e
 +      errors[name] = e.message
@@ -1332,7 +1332,7 @@ index b19d9202..1c647e03 100644
  
      def normalize_document_type(doc_type)
 diff --git a/app/models/provider/binance.rb b/app/models/provider/binance.rb
-index ad8833a1..015ea942 100644
+index ad8833a1..c8cbab35 100644
 --- a/app/models/provider/binance.rb
 +++ b/app/models/provider/binance.rb
 @@ -14,6 +14,10 @@ class Provider::Binance
@@ -1430,7 +1430,7 @@ index ad8833a1..015ea942 100644
    # Futures trade history for a single symbol
    def get_futures_trades(symbol, limit: 1000, from_id: nil, start_time: nil, end_time: nil)
      params = { "symbol" => symbol, "limit" => limit.to_s }
-@@ -143,11 +193,44 @@ class Provider::Binance
+@@ -143,14 +193,49 @@ class Provider::Binance
  
    private
  
@@ -1468,15 +1468,31 @@ index ad8833a1..015ea942 100644
 +
 +    def signed_request(http_method, path, extra_params:, base_url:)
        params = timestamp_params.merge(extra_params)
-       query_string = URI.encode_www_form(params.sort)
+-      query_string = URI.encode_www_form(params.sort)
++      ordered_params = params.sort.to_h
++      query_string = URI.encode_www_form(ordered_params)
++      signed_params = ordered_params.merge("signature" => sign(query_string))
  
 -      response = self.class.get(
 +      response = self.class.public_send(
 +        http_method,
          path,
          base_uri: base_url,
-         query: "#{query_string}&signature=#{sign(query_string)}",
-@@ -180,7 +263,7 @@ class Provider::Binance
+-        query: "#{query_string}&signature=#{sign(query_string)}",
++        query: signed_params,
+         headers: auth_headers
+       )
+ 
+@@ -175,12 +260,16 @@ class Provider::Binance
+     def handle_response(response)
+       parsed = response.parsed_response
+ 
++      if parsed.is_a?(Hash) && [ -2014, -2015 ].include?(parsed["code"])
++        raise AuthenticationError, extract_error_message(parsed) || "Invalid Binance credentials"
++      end
++
+       case response.code
+       when 200..299
          parsed
        when 401
          raise AuthenticationError, extract_error_message(parsed) || "Unauthorized"
@@ -1485,6 +1501,22 @@ index ad8833a1..015ea942 100644
          raise RateLimitError, "Rate limit exceeded"
        else
          msg = extract_error_message(parsed) || "API error: #{response.code}"
+@@ -190,8 +279,13 @@ class Provider::Binance
+     end
+ 
+     def extract_error_message(parsed)
+-      return parsed if parsed.is_a?(String)
++      if parsed.is_a?(String)
++        return "Unexpected HTML response from Binance" if parsed.match?(/<!DOCTYPE html|<html/i)
++
++        return parsed.slice(0, 500)
++      end
+       return nil unless parsed.is_a?(Hash)
+-      parsed["msg"] || parsed["message"] || parsed["error"]
++
++      (parsed["msg"] || parsed["message"] || parsed["error"])&.to_s&.slice(0, 500)
+     end
+ end
 diff --git a/app/models/provider/binance_public.rb b/app/models/provider/binance_public.rb
 index a330a4cc..842d08b0 100644
 --- a/app/models/provider/binance_public.rb
@@ -2040,7 +2072,7 @@ index 323f2fb7..11a725cf 100644
              </div>
            </div>
 diff --git a/app/views/settings/providers/_binance_panel.html.erb b/app/views/settings/providers/_binance_panel.html.erb
-index 1b329f16..4c876e78 100644
+index 1b329f16..f633a54e 100644
 --- a/app/views/settings/providers/_binance_panel.html.erb
 +++ b/app/views/settings/providers/_binance_panel.html.erb
 @@ -1,4 +1,4 @@
@@ -2049,7 +2081,7 @@ index 1b329f16..4c876e78 100644
    <% items = local_assigns[:binance_items] || @binance_items || Current.family.binance_items.active.ordered %>
  
    <%= render DS::Alert.new(
-@@ -37,74 +37,118 @@
+@@ -37,74 +37,125 @@
    <% if items.any? %>
      <div class="space-y-3">
        <% items.each do |item| %>
@@ -2158,6 +2190,13 @@ index 1b329f16..4c876e78 100644
 +                                  placeholder: t("settings.providers.binance_panel.keep_api_secret_placeholder"),
 +                                  type: :password,
 +                                  value: nil %>
++
++              <% if item.credentials_configured? %>
++                <p class="text-xs text-success">
++                  <%= icon "shield-check", size: "sm", class: "inline-block mr-1" %>
++                  <%= t("settings.providers.binance_panel.credentials_saved") %>
++                </p>
++              <% end %>
 +
 +              <div class="flex justify-end">
 +                <%= form.submit t("settings.providers.binance_panel.update_connection") %>
@@ -2549,7 +2588,7 @@ index a10a6274..72a1c75e 100644
          few: Доступно %{count} счёта
          many: Доступно %{count} счетов
 diff --git a/config/locales/views/settings/en.yml b/config/locales/views/settings/en.yml
-index 941500da..6115604d 100644
+index 941500da..2b9b8702 100644
 --- a/config/locales/views/settings/en.yml
 +++ b/config/locales/views/settings/en.yml
 @@ -425,7 +425,7 @@ en:
@@ -2573,7 +2612,7 @@ index 941500da..6115604d 100644
          setup_instructions: "To connect Binance, create a read-only API key:"
          step1_html: 'Go to <a href="https://www.binance.com/en/my/settings/api-management" target="_blank" rel="noopener noreferrer" class="underline">Binance API Management</a>'
          step2: "Create a new API key with Enable Reading permission only"
-@@ -476,15 +481,19 @@ en:
+@@ -476,15 +481,20 @@ en:
          ip_hint_contact_admin: "Contact your administrator to obtain the app server's egress IP address."
          api_key_label: API Key
          api_key_placeholder: Paste your Binance API Key
@@ -2581,6 +2620,7 @@ index 941500da..6115604d 100644
          api_secret_label: API Secret
          api_secret_placeholder: Paste your Binance API Secret
 +        keep_api_secret_placeholder: Leave blank to keep the existing API secret
++        credentials_saved: Credentials are saved and encrypted. Leave both fields blank to keep them.
          connect_button: Connect Binance
 +        setup_accounts: Setup account
          syncing: Syncing...
@@ -2595,10 +2635,10 @@ index 941500da..6115604d 100644
          step1_html: 'Go to <a href="https://pro.kraken.com/app/settings/api" target="_blank" rel="noopener noreferrer" class="underline">Kraken API settings</a>'
          step2: "Create an API key with Query Funds and Query Closed Orders & Trades only."
 diff --git a/config/locales/views/settings/ru.yml b/config/locales/views/settings/ru.yml
-index 2104c799..d9780869 100644
+index 2104c799..d03aa452 100644
 --- a/config/locales/views/settings/ru.yml
 +++ b/config/locales/views/settings/ru.yml
-@@ -275,12 +275,21 @@ ru:
+@@ -275,12 +275,22 @@ ru:
            поступали в Sure.
          page_title: Синхронизация банка
        binance_panel:
@@ -2613,6 +2653,7 @@ index 2104c799..d9780869 100644
          api_secret_label: Секретный ключ API
          api_secret_placeholder: Вставьте ваш секретный ключ API Binance
 +        keep_api_secret_placeholder: Оставьте пустым, чтобы сохранить текущий секретный ключ
++        credentials_saved: Данные доступа сохранены и зашифрованы. Оставьте оба поля пустыми, чтобы не менять их.
          connect_button: Подключить Binance
 -        disconnect_confirm: Вы уверены, что хотите отключить Binance?
 +        setup_accounts: Настроить счёт
@@ -2621,7 +2662,7 @@ index 2104c799..d9780869 100644
          historical_import: Настройки исторического импорта
          ip_hint_body: 'Добавьте IP-адрес выхода сервера приложения в белый список
            API-ключа Binance:'
-@@ -537,8 +546,8 @@ ru:
+@@ -537,8 +547,8 @@ ru:
        sync_provider_no_items: Нет доступных подключений для синхронизации.
        taglines:
          akahu: Синхронизация финансовых учреждений Новой Зеландии через Akahu.
@@ -2687,10 +2728,10 @@ index 40f62952..62b36544 100644
    end
 diff --git a/docs/UPSTREAM.md b/docs/UPSTREAM.md
 new file mode 100644
-index 00000000..df824676
+index 00000000..de84e2a2
 --- /dev/null
 +++ b/docs/UPSTREAM.md
-@@ -0,0 +1,267 @@
+@@ -0,0 +1,283 @@
 +# Maintaining the Petrushin AI Sure fork
 +
 +This repository is a native GitHub fork of [`we-promise/sure`](https://github.com/we-promise/sure).
@@ -2820,6 +2861,22 @@ index 00000000..df824676
 +  named Binance credentials per family with connection-scoped imports,
 +  non-destructive credential edits, duplicate-key protection, stable account
 +  names and bounded scheduled fan-out.
++
++### SURE-008 — Capability-aware Binance authentication and credential status
++
++- Source: direct `main` production fix for the Teknologia fork and
++  [`docs/hosting/binance.md`](hosting/binance.md).
++- Purpose: send signed Funding Wallet POST parameters in HTTParty's supported
++  hash form; validate the key/IP pair against Spot while treating permission
++  denials from optional Binance products as source-specific unavailability;
++  sanitize unexpected HTML provider errors; and show an explicit encrypted
++  credential-saved indicator without redisplaying secrets.
++- Main conflict areas: `app/models/provider/binance.rb`, all optional
++  `app/models/binance_item/*_importer.rb` sources, Binance provider/importer
++  tests, the Binance settings panel and locales.
++- Retirement rule: remove only after upstream both supports signed POST
++  requests and distinguishes invalid base credentials from unavailable
++  account-type capabilities without losing the successful sources.
 +
 +If upstream absorbs a patch, record the upstream PR and commit here, compare
 +behavior and tests, remove only the duplicated downstream implementation, and
@@ -2960,10 +3017,10 @@ index 00000000..df824676
 +  sufficient.
 diff --git a/docs/hosting/binance.md b/docs/hosting/binance.md
 new file mode 100644
-index 00000000..9eaf5ebb
+index 00000000..ee549c0e
 --- /dev/null
 +++ b/docs/hosting/binance.md
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,103 @@
 +# Binance
 +
 +Sure connects directly to Binance with a read-only API key. No third-party
@@ -2982,6 +3039,11 @@ index 00000000..9eaf5ebb
 +Later syncs update balances, holdings and transactions but never overwrite the
 +chosen account name. Renaming a connection also leaves an already imported
 +account name unchanged.
++
++Saved credentials are never rendered back into the form. The settings panel
++shows an explicit encrypted-credentials indicator instead; blank key fields on
++an existing connection mean "keep the saved values", not "credentials are
++missing".
 +
 +Each key produces one combined Sure account containing all supported Binance
 +balance sources listed below. This avoids double counting between source types
@@ -3009,7 +3071,11 @@ index 00000000..9eaf5ebb
 +endpoint. Sure records each source status in the provider payload and under
 +**Settings → Debug logs**. A temporary failure never turns the affected source
 +into a zero balance: its last successful assets are kept until the source can be
-+read again. A sync fails outright only when every balance source fails.
++read again. The Spot account endpoint is the base credential/IP check. Once it
++succeeds, a permission denial from Portfolio Margin, Options or another
++optional product is treated as source-specific unavailability instead of an
++invalid key for the entire connection. A sync fails outright when the base
++credential check fails or every balance source fails.
 +
 +## Minimum balance
 +
@@ -3114,10 +3180,10 @@ index 5af9070d..f1b5e0a9 100644
      with_ai_environment(
        "OPENAI_ACCESS_TOKEN" => "sk-secret-openai",
 diff --git a/test/controllers/binance_items_controller_test.rb b/test/controllers/binance_items_controller_test.rb
-index 45170542..37c18a0f 100644
+index 45170542..d5f9e54a 100644
 --- a/test/controllers/binance_items_controller_test.rb
 +++ b/test/controllers/binance_items_controller_test.rb
-@@ -29,6 +29,45 @@ class BinanceItemsControllerTest < ActionDispatch::IntegrationTest
+@@ -29,6 +29,46 @@ class BinanceItemsControllerTest < ActionDispatch::IntegrationTest
      assert_response :redirect
    end
  
@@ -3158,12 +3224,13 @@ index 45170542..37c18a0f 100644
 +    assert_response :success
 +    assert_select "#binance-providers-panel form[action='#{binance_items_path}']"
 +    assert_select "#binance-providers-panel input[name='binance_item[name]']"
++    assert_select "#binance-providers-panel", text: /Credentials are saved and encrypted/
 +  end
 +
    test "should show setup_accounts page" do
      get setup_accounts_binance_item_url(@binance_item)
      assert_response :success
-@@ -55,6 +94,24 @@ class BinanceItemsControllerTest < ActionDispatch::IntegrationTest
+@@ -55,6 +95,24 @@ class BinanceItemsControllerTest < ActionDispatch::IntegrationTest
      assert_equal "Crypto", binance_account.current_account.accountable_type
    end
  
@@ -3468,10 +3535,10 @@ index 00000000..1d72e544
 +end
 diff --git a/test/models/binance_item/funding_importer_test.rb b/test/models/binance_item/funding_importer_test.rb
 new file mode 100644
-index 00000000..bb3150c5
+index 00000000..fd3d7308
 --- /dev/null
 +++ b/test/models/binance_item/funding_importer_test.rb
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,33 @@
 +# frozen_string_literal: true
 +
 +require "test_helper"
@@ -3494,6 +3561,15 @@ index 00000000..bb3150c5
 +    assert_equal 1, result[:assets].size
 +    assert_equal "19.0", result[:assets].first[:total]
 +    assert_equal "9.0", result[:assets].first[:locked]
++  end
++
++  test "treats Funding permission denial as source unavailable" do
++    @provider.stubs(:get_funding_wallet).raises(Provider::Binance::AuthenticationError, "not enabled")
++
++    result = BinanceItem::FundingImporter.new(@item, provider: @provider).import
++
++    assert_equal [], result[:assets]
++    assert_equal "not enabled", result[:error]
 +  end
 +end
 diff --git a/test/models/binance_item/importer_test.rb b/test/models/binance_item/importer_test.rb
@@ -3753,10 +3829,10 @@ index 00000000..d6292068
 +end
 diff --git a/test/models/binance_item/options_importer_test.rb b/test/models/binance_item/options_importer_test.rb
 new file mode 100644
-index 00000000..6440e880
+index 00000000..a476f636
 --- /dev/null
 +++ b/test/models/binance_item/options_importer_test.rb
-@@ -0,0 +1,22 @@
+@@ -0,0 +1,31 @@
 +# frozen_string_literal: true
 +
 +require "test_helper"
@@ -3778,13 +3854,22 @@ index 00000000..6440e880
 +    assert_equal "125.0", result[:assets].first[:total]
 +    assert_equal "25.0", result[:assets].first[:locked]
 +  end
++
++  test "treats Options permission denial as source unavailable" do
++    @provider.stubs(:get_options_account).raises(Provider::Binance::AuthenticationError, "not enabled")
++
++    result = BinanceItem::OptionsImporter.new(@item, provider: @provider).import
++
++    assert_equal [], result[:assets]
++    assert_equal "not enabled", result[:error]
++  end
 +end
 diff --git a/test/models/binance_item/portfolio_margin_importer_test.rb b/test/models/binance_item/portfolio_margin_importer_test.rb
 new file mode 100644
-index 00000000..027fce59
+index 00000000..a99c1df7
 --- /dev/null
 +++ b/test/models/binance_item/portfolio_margin_importer_test.rb
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,52 @@
 +# frozen_string_literal: true
 +
 +require "test_helper"
@@ -3822,6 +3907,19 @@ index 00000000..027fce59
 +
 +    assert_equal "classic", result[:raw]["mode"]
 +    assert_equal "13.0", result[:assets].first[:total]
++  end
++
++  test "treats Portfolio Margin permission denials as source unavailable" do
++    @provider.stubs(:get_portfolio_margin_pro_balance)
++      .raises(Provider::Binance::AuthenticationError, "not a pro account")
++    @provider.stubs(:get_portfolio_margin_balance)
++      .raises(Provider::Binance::AuthenticationError, "not a classic account")
++
++    result = BinanceItem::PortfolioMarginImporter.new(@item, provider: @provider).import
++
++    assert_equal [], result[:assets]
++    assert_includes result[:error], "not a pro account"
++    assert_includes result[:error], "not a classic account"
 +  end
 +end
 diff --git a/test/models/binance_item/spot_importer_test.rb b/test/models/binance_item/spot_importer_test.rb
@@ -4094,10 +4192,25 @@ index 2b807d17..29af34d0 100644
      err = assert_raises(Provider::Anthropic::Error) do
        Provider::Anthropic::PdfProcessor.new(
 diff --git a/test/models/provider/binance_test.rb b/test/models/provider/binance_test.rb
-index 3a502db8..297bb757 100644
+index 3a502db8..29cec79e 100644
 --- a/test/models/provider/binance_test.rb
 +++ b/test/models/provider/binance_test.rb
-@@ -38,6 +38,66 @@ class Provider::BinanceTest < ActiveSupport::TestCase
+@@ -31,6 +31,14 @@ class Provider::BinanceTest < ActiveSupport::TestCase
+     end
+   end
+ 
++  test "handle_response recognizes Binance credential codes on non-401 responses" do
++    response = mock_httparty_response(400, { "code" => -2015, "msg" => "Invalid API-key, IP, or permissions" })
++
++    assert_raises(Provider::Binance::AuthenticationError) do
++      @provider.send(:handle_response, response)
++    end
++  end
++
+   test "handle_response raises RateLimitError on 429" do
+     response = mock_httparty_response(429, {})
+     assert_raises(Provider::Binance::RateLimitError) do
+@@ -38,6 +46,100 @@ class Provider::BinanceTest < ActiveSupport::TestCase
      end
    end
  
@@ -4143,6 +4256,40 @@ index 3a502db8..297bb757 100644
 +    ).returns([])
 +
 +    assert_equal [], @provider.get_funding_wallet
++  end
++
++  test "signed POST sends a hash whose signature matches the encoded query" do
++    @provider.stubs(:timestamp_params).returns({ "timestamp" => "1000", "recvWindow" => "5000" })
++    expected_query = {
++      "needBtcValuation" => "false",
++      "recvWindow" => "5000",
++      "timestamp" => "1000"
++    }
++    expected_signature = OpenSSL::HMAC.hexdigest(
++      "sha256",
++      "test_secret",
++      URI.encode_www_form(expected_query)
++    )
++    response = mock_httparty_response(200, [])
++
++    Provider::Binance.expects(:post).with(
++      "/sapi/v1/asset/get-funding-asset",
++      base_uri: Provider::Binance::SPOT_BASE_URL,
++      query: expected_query.merge("signature" => expected_signature),
++      headers: { "X-MBX-APIKEY" => "test_key" }
++    ).returns(response)
++
++    assert_equal [], @provider.get_funding_wallet
++  end
++
++  test "sanitizes unexpected HTML provider errors" do
++    response = mock_httparty_response(403, "<!DOCTYPE html><html><body>blocked</body></html>")
++
++    error = assert_raises(Provider::Binance::ApiError) do
++      @provider.send(:handle_response, response)
++    end
++
++    assert_equal "Unexpected HTML response from Binance", error.message
 +  end
 +
 +  test "uses the correct hosts for derivative account types" do

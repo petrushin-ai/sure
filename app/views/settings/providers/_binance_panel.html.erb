@@ -107,6 +107,13 @@
                                   type: :password,
                                   value: nil %>
 
+              <% if item.credentials_configured? %>
+                <p class="text-xs text-success">
+                  <%= icon "shield-check", size: "sm", class: "inline-block mr-1" %>
+                  <%= t("settings.providers.binance_panel.credentials_saved") %>
+                </p>
+              <% end %>
+
               <div class="flex justify-end">
                 <%= form.submit t("settings.providers.binance_panel.update_connection") %>
               </div>

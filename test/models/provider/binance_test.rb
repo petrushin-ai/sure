@@ -31,6 +31,14 @@ class Provider::BinanceTest < ActiveSupport::TestCase
     end
   end
 
+  test "handle_response recognizes Binance credential codes on non-401 responses" do
+    response = mock_httparty_response(400, { "code" => -2015, "msg" => "Invalid API-key, IP, or permissions" })
+
+    assert_raises(Provider::Binance::AuthenticationError) do
+      @provider.send(:handle_response, response)
+    end
+  end
+
   test "handle_response raises RateLimitError on 429" do
     response = mock_httparty_response(429, {})
     assert_raises(Provider::Binance::RateLimitError) do
@@ -80,6 +88,40 @@ class Provider::BinanceTest < ActiveSupport::TestCase
     ).returns([])
 
     assert_equal [], @provider.get_funding_wallet
+  end
+
+  test "signed POST sends a hash whose signature matches the encoded query" do
+    @provider.stubs(:timestamp_params).returns({ "timestamp" => "1000", "recvWindow" => "5000" })
+    expected_query = {
+      "needBtcValuation" => "false",
+      "recvWindow" => "5000",
+      "timestamp" => "1000"
+    }
+    expected_signature = OpenSSL::HMAC.hexdigest(
+      "sha256",
+      "test_secret",
+      URI.encode_www_form(expected_query)
+    )
+    response = mock_httparty_response(200, [])
+
+    Provider::Binance.expects(:post).with(
+      "/sapi/v1/asset/get-funding-asset",
+      base_uri: Provider::Binance::SPOT_BASE_URL,
+      query: expected_query.merge("signature" => expected_signature),
+      headers: { "X-MBX-APIKEY" => "test_key" }
+    ).returns(response)
+
+    assert_equal [], @provider.get_funding_wallet
+  end
+
+  test "sanitizes unexpected HTML provider errors" do
+    response = mock_httparty_response(403, "<!DOCTYPE html><html><body>blocked</body></html>")
+
+    error = assert_raises(Provider::Binance::ApiError) do
+      @provider.send(:handle_response, response)
+    end
+
+    assert_equal "Unexpected HTML response from Binance", error.message
   end
 
   test "uses the correct hosts for derivative account types" do

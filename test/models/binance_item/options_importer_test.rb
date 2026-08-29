@@ -19,4 +19,13 @@ class BinanceItem::OptionsImporterTest < ActiveSupport::TestCase
     assert_equal "125.0", result[:assets].first[:total]
     assert_equal "25.0", result[:assets].first[:locked]
   end
+
+  test "treats Options permission denial as source unavailable" do
+    @provider.stubs(:get_options_account).raises(Provider::Binance::AuthenticationError, "not enabled")
+
+    result = BinanceItem::OptionsImporter.new(@item, provider: @provider).import
+
+    assert_equal [], result[:assets]
+    assert_equal "not enabled", result[:error]
+  end
 end

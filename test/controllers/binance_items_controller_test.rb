@@ -66,6 +66,7 @@ class BinanceItemsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "#binance-providers-panel form[action='#{binance_items_path}']"
     assert_select "#binance-providers-panel input[name='binance_item[name]']"
+    assert_select "#binance-providers-panel", text: /Credentials are saved and encrypted/
   end
 
   test "should show setup_accounts page" do

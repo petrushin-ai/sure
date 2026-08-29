@@ -485,6 +485,7 @@ en:
         api_secret_label: API Secret
         api_secret_placeholder: Paste your Binance API Secret
         keep_api_secret_placeholder: Leave blank to keep the existing API secret
+        credentials_saved: Credentials are saved and encrypted. Leave both fields blank to keep them.
         connect_button: Connect Binance
         setup_accounts: Setup account
         syncing: Syncing...

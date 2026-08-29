@@ -128,6 +128,22 @@ image publish. A stale or non-applicable patch is a hard failure.
   non-destructive credential edits, duplicate-key protection, stable account
   names and bounded scheduled fan-out.
 
+### SURE-008 — Capability-aware Binance authentication and credential status
+
+- Source: direct `main` production fix for the Teknologia fork and
+  [`docs/hosting/binance.md`](hosting/binance.md).
+- Purpose: send signed Funding Wallet POST parameters in HTTParty's supported
+  hash form; validate the key/IP pair against Spot while treating permission
+  denials from optional Binance products as source-specific unavailability;
+  sanitize unexpected HTML provider errors; and show an explicit encrypted
+  credential-saved indicator without redisplaying secrets.
+- Main conflict areas: `app/models/provider/binance.rb`, all optional
+  `app/models/binance_item/*_importer.rb` sources, Binance provider/importer
+  tests, the Binance settings panel and locales.
+- Retirement rule: remove only after upstream both supports signed POST
+  requests and distinguishes invalid base credentials from unavailable
+  account-type capabilities without losing the successful sources.
+
 If upstream absorbs a patch, record the upstream PR and commit here, compare
 behavior and tests, remove only the duplicated downstream implementation, and
 regenerate the patch. Do not silently delete a ledger entry.

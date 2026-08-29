@@ -227,13 +227,15 @@ class Provider::Binance
 
     def signed_request(http_method, path, extra_params:, base_url:)
       params = timestamp_params.merge(extra_params)
-      query_string = URI.encode_www_form(params.sort)
+      ordered_params = params.sort.to_h
+      query_string = URI.encode_www_form(ordered_params)
+      signed_params = ordered_params.merge("signature" => sign(query_string))
 
       response = self.class.public_send(
         http_method,
         path,
         base_uri: base_url,
-        query: "#{query_string}&signature=#{sign(query_string)}",
+        query: signed_params,
         headers: auth_headers
       )
 
@@ -258,6 +260,10 @@ class Provider::Binance
     def handle_response(response)
       parsed = response.parsed_response
 
+      if parsed.is_a?(Hash) && [ -2014, -2015 ].include?(parsed["code"])
+        raise AuthenticationError, extract_error_message(parsed) || "Invalid Binance credentials"
+      end
+
       case response.code
       when 200..299
         parsed
@@ -273,8 +279,13 @@ class Provider::Binance
     end
 
     def extract_error_message(parsed)
-      return parsed if parsed.is_a?(String)
+      if parsed.is_a?(String)
+        return "Unexpected HTML response from Binance" if parsed.match?(/<!DOCTYPE html|<html/i)
+
+        return parsed.slice(0, 500)
+      end
       return nil unless parsed.is_a?(Hash)
-      parsed["msg"] || parsed["message"] || parsed["error"]
+
+      (parsed["msg"] || parsed["message"] || parsed["error"])&.to_s&.slice(0, 500)
     end
 end

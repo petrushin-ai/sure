@@ -15,7 +15,7 @@ class BinanceItem::IsolatedMarginImporter
     assets = Array(raw["assets"]).flat_map { |account| parse_account(account) }
 
     { assets: assets, raw: raw, source: "isolated_margin" }
-  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
+  rescue Provider::Binance::RateLimitError
     raise
   rescue => e
     Rails.logger.error "BinanceItem::IsolatedMarginImporter #{binance_item.id} - #{e.message}"

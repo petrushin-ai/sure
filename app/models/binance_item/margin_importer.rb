@@ -14,7 +14,7 @@ class BinanceItem::MarginImporter
     raw = provider.get_margin_account
     assets = parse_assets(raw["userAssets"] || [])
     { assets: assets, raw: raw, source: "margin" }
-  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
+  rescue Provider::Binance::RateLimitError
     raise
   rescue => e
     Rails.logger.error "BinanceItem::MarginImporter #{binance_item.id} - #{e.message}"

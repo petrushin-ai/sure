@@ -25,7 +25,7 @@ class BinanceItem::OptionsImporter
     end
 
     { assets: assets, raw: raw, source: "options" }
-  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
+  rescue Provider::Binance::RateLimitError
     raise
   rescue => e
     Rails.logger.error "BinanceItem::OptionsImporter #{binance_item.id} - #{e.message}"

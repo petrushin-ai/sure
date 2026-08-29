@@ -26,7 +26,7 @@ class BinanceItem::YieldAssetImporter
     }
     result[:error] = errors.values.join("; ") if bfusd.nil? && rwusd.nil?
     result
-  rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
+  rescue Provider::Binance::RateLimitError
     raise
   rescue => e
     Rails.logger.error "BinanceItem::YieldAssetImporter #{binance_item.id} - #{e.message}"
@@ -37,7 +37,7 @@ class BinanceItem::YieldAssetImporter
 
     def fetch(name)
       yield
-    rescue Provider::Binance::AuthenticationError, Provider::Binance::RateLimitError
+    rescue Provider::Binance::RateLimitError
       raise
     rescue => e
       errors[name] = e.message

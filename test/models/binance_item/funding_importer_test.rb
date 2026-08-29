@@ -21,4 +21,13 @@ class BinanceItem::FundingImporterTest < ActiveSupport::TestCase
     assert_equal "19.0", result[:assets].first[:total]
     assert_equal "9.0", result[:assets].first[:locked]
   end
+
+  test "treats Funding permission denial as source unavailable" do
+    @provider.stubs(:get_funding_wallet).raises(Provider::Binance::AuthenticationError, "not enabled")
+
+    result = BinanceItem::FundingImporter.new(@item, provider: @provider).import
+
+    assert_equal [], result[:assets]
+    assert_equal "not enabled", result[:error]
+  end
 end

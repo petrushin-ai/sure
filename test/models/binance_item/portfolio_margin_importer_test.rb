@@ -36,4 +36,17 @@ class BinanceItem::PortfolioMarginImporterTest < ActiveSupport::TestCase
     assert_equal "classic", result[:raw]["mode"]
     assert_equal "13.0", result[:assets].first[:total]
   end
+
+  test "treats Portfolio Margin permission denials as source unavailable" do
+    @provider.stubs(:get_portfolio_margin_pro_balance)
+      .raises(Provider::Binance::AuthenticationError, "not a pro account")
+    @provider.stubs(:get_portfolio_margin_balance)
+      .raises(Provider::Binance::AuthenticationError, "not a classic account")
+
+    result = BinanceItem::PortfolioMarginImporter.new(@item, provider: @provider).import
+
+    assert_equal [], result[:assets]
+    assert_includes result[:error], "not a pro account"
+    assert_includes result[:error], "not a classic account"
+  end
 end
