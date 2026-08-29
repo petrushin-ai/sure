@@ -20,6 +20,7 @@ class AiHealth
               :pgvector_extension_available, :pgvector_extension_enabled,
               :pgvector_table_available, :qdrant_endpoint, :llm_probe,
               :pdf_text_extraction_probe, :pdf_vision_processing_probe,
+              :pdf_transaction_extraction_probe,
               :vector_store_probe, :embedding_probe
 
   def initialize(run_probes: true, force_probes: false)
@@ -72,6 +73,14 @@ class AiHealth
     pdf_probe_status(pdf_vision_processing_probe, capable: @pdf_vision_processing_capable)
   end
 
+  def pdf_transaction_extraction_supported?
+    @pdf_transaction_extraction_capable == true && pdf_transaction_extraction_probe.passing?
+  end
+
+  def pdf_transaction_extraction_status
+    pdf_probe_status(pdf_transaction_extraction_probe, capable: @pdf_transaction_extraction_capable)
+  end
+
   def vector_store_configured?
     @vector_store_configured
   end
@@ -93,7 +102,8 @@ class AiHealth
   end
 
   def last_checked_at
-    [ llm_probe, pdf_text_extraction_probe, pdf_vision_processing_probe, vector_store_probe, embedding_probe ]
+    [ llm_probe, pdf_text_extraction_probe, pdf_vision_processing_probe, pdf_transaction_extraction_probe,
+      vector_store_probe, embedding_probe ]
       .filter_map(&:checked_at)
       .max
   end
@@ -134,6 +144,7 @@ class AiHealth
       end
       @pdf_text_extraction_capable = @pdf_processing_capable && @effective_llm_protocol == :openai
       @pdf_vision_processing_capable = @pdf_processing_capable
+      @pdf_transaction_extraction_capable = @pdf_processing_capable
 
       @openai_endpoint = redact_endpoint(openai_uri_base.presence || OPENAI_DEFAULT_ENDPOINT)
       @llm_access_token = access_token(@effective_llm_protocol)
@@ -161,6 +172,7 @@ class AiHealth
       @llm_probe = llm_configured? ? Probe.not_checked : Probe.not_configured
       @pdf_text_extraction_probe = llm_configured? && @pdf_text_extraction_capable ? Probe.not_checked : Probe.not_configured
       @pdf_vision_processing_probe = llm_configured? && @pdf_vision_processing_capable ? Probe.not_checked : Probe.not_configured
+      @pdf_transaction_extraction_probe = llm_configured? && @pdf_transaction_extraction_capable ? Probe.not_checked : Probe.not_configured
       @vector_store_probe = vector_store_adapter.present? ? Probe.not_checked : Probe.not_configured
       @embedding_probe = vector_store_adapter == :pgvector ? Probe.not_checked : Probe.not_configured
       return unless run_probes?
@@ -185,6 +197,15 @@ class AiHealth
         end
         if @pdf_vision_processing_capable
           @pdf_vision_processing_probe = probe.pdf_vision_processing(
+            provider: @effective_llm_protocol,
+            endpoint: @llm_raw_endpoint,
+            access_token: @llm_access_token,
+            model: llm_model,
+            openai_compatible: @effective_llm_protocol == :openai && openai_compatible_endpoint?
+          )
+        end
+        if @pdf_transaction_extraction_capable
+          @pdf_transaction_extraction_probe = probe.pdf_transaction_extraction(
             provider: @effective_llm_protocol,
             endpoint: @llm_raw_endpoint,
             access_token: @llm_access_token,

@@ -11,6 +11,7 @@ class Admin::SystemHealthTest < ApplicationSystemTestCase
     AiHealth::Probe.any_instance.stubs(:llm).returns(probe_result(:passing))
     AiHealth::Probe.any_instance.stubs(:pdf_text_extraction).returns(probe_result(:passing))
     AiHealth::Probe.any_instance.stubs(:pdf_vision_processing).returns(probe_result(:passing))
+    AiHealth::Probe.any_instance.stubs(:pdf_transaction_extraction).returns(probe_result(:passing))
     AiHealth::Probe.any_instance.stubs(:openai_vector_store).returns(probe_result(:passing))
   end
 
@@ -30,7 +31,8 @@ class Admin::SystemHealthTest < ApplicationSystemTestCase
       assert_text "Live check passed"
       assert_text "PDF text-extraction path"
       assert_text "PDF vision/native path"
-      assert_text "Synthetic PDF check passed", count: 2
+      assert_text "Bank-statement transaction extraction"
+      assert_text "Synthetic PDF check passed", count: 3
       assert_text "Live checks passed"
     end
   end

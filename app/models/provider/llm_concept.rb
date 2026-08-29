@@ -12,6 +12,18 @@ module Provider::LlmConcept
     account_holder
   ].freeze
 
+  BANK_STATEMENT_KEYS = %w[
+    bank_name
+    account_holder
+    account_number
+    statement_period
+    opening_balance
+    closing_balance
+    transactions
+  ].freeze
+  BANK_STATEMENT_PERIOD_KEYS = %w[start_date end_date].freeze
+  BANK_STATEMENT_TRANSACTION_KEYS = %w[date description amount reference category].freeze
+
   def self.pdf_processing_json_schema
     {
       type: "object",
@@ -46,6 +58,49 @@ module Provider::LlmConcept
     }
   end
 
+  def self.bank_statement_json_schema
+    {
+      type: "object",
+      properties: {
+        bank_name: { type: [ "string", "null" ] },
+        account_holder: { type: [ "string", "null" ] },
+        account_number: { type: [ "string", "null" ], description: "Typically last 4 digits only." },
+        statement_period: {
+          type: "object",
+          properties: {
+            start_date: { type: [ "string", "null" ], format: "date" },
+            end_date: { type: [ "string", "null" ], format: "date" }
+          },
+          required: BANK_STATEMENT_PERIOD_KEYS,
+          additionalProperties: false
+        },
+        opening_balance: { type: [ "number", "null" ] },
+        closing_balance: { type: [ "number", "null" ] },
+        transactions: {
+          type: "array",
+          description: "Every transaction in the statement, in document order.",
+          items: {
+            type: "object",
+            properties: {
+              date: { type: "string", format: "date" },
+              description: { type: "string", minLength: 1 },
+              amount: {
+                type: "number",
+                description: "Negative for debits / expenses, positive for credits / deposits."
+              },
+              reference: { type: [ "string", "null" ] },
+              category: { type: [ "string", "null" ] }
+            },
+            required: BANK_STATEMENT_TRANSACTION_KEYS,
+            additionalProperties: false
+          }
+        }
+      },
+      required: BANK_STATEMENT_KEYS,
+      additionalProperties: false
+    }
+  end
+
   def self.valid_pdf_processing_result?(result)
     return false unless result.is_a?(PdfProcessingResult)
     return false unless Import::DOCUMENT_TYPES.include?(result.document_type)
@@ -67,6 +122,37 @@ module Provider::LlmConcept
     true
   end
 
+  def self.valid_bank_statement_extraction_payload?(payload)
+    return false unless payload.is_a?(Hash)
+
+    data = payload.deep_stringify_keys
+    return false unless data.keys.sort == BANK_STATEMENT_KEYS.sort
+    return false unless string_or_nil?(data["bank_name"])
+    return false unless string_or_nil?(data["account_holder"])
+    return false unless string_or_nil?(data["account_number"])
+    return false unless data["statement_period"].is_a?(Hash)
+
+    period = data["statement_period"]
+    return false unless period.keys.sort == BANK_STATEMENT_PERIOD_KEYS.sort
+    return false unless iso_date_or_nil?(period["start_date"])
+    return false unless iso_date_or_nil?(period["end_date"])
+    return false unless data["opening_balance"].nil? || data["opening_balance"].is_a?(Numeric)
+    return false unless data["closing_balance"].nil? || data["closing_balance"].is_a?(Numeric)
+    return false unless data["transactions"].is_a?(Array)
+
+    data["transactions"].all? do |transaction|
+      next false unless transaction.is_a?(Hash)
+
+      transaction = transaction.stringify_keys
+      transaction.keys.sort == BANK_STATEMENT_TRANSACTION_KEYS.sort &&
+        iso_date?(transaction["date"]) &&
+        transaction["description"].is_a?(String) && transaction["description"].present? &&
+        transaction["amount"].is_a?(Numeric) &&
+        string_or_nil?(transaction["reference"]) &&
+        string_or_nil?(transaction["category"])
+    end
+  end
+
   def self.string_or_nil?(value)
     value.nil? || value.is_a?(String)
   end
@@ -82,6 +168,16 @@ module Provider::LlmConcept
     false
   end
   private_class_method :iso_date_or_nil?
+
+  def self.iso_date?(value)
+    return false unless value.is_a?(String)
+
+    Date.iso8601(value)
+    true
+  rescue Date::Error
+    false
+  end
+  private_class_method :iso_date?
 
   AutoCategorization = Data.define(:transaction_id, :category_name)
 

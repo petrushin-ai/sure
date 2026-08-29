@@ -25,6 +25,18 @@ class AiHealth
       "currency" => "USD",
       "account_holder" => "Health Check"
     }.freeze
+    PDF_TRANSACTION_TEST_EXPECTED_DATA = {
+      bank_name: PDF_TEST_INSTITUTION,
+      account_holder: "Health Check",
+      account_number: nil,
+      period: { start_date: "2026-01-01", end_date: "2026-01-31" },
+      opening_balance: 100.0,
+      closing_balance: 125.0,
+      transactions: [
+        { date: "2026-01-10", amount: 50.0, name: "HEALTH CHECK DEPOSIT", category: "Income", notes: "HC-DEP" },
+        { date: "2026-01-20", amount: -25.0, name: "HEALTH CHECK PURCHASE", category: "Test Expenses", notes: "HC-PUR" }
+      ]
+    }.freeze
     PDF_TEST_LINES = [
       "Bank Statement",
       "Institution: #{PDF_TEST_INSTITUTION}",
@@ -33,8 +45,18 @@ class AiHealth
       "Opening balance: USD 100.00",
       "Closing balance: USD 125.00",
       "Transactions: 2",
-      "2026-01-10 Deposit: USD 50.00",
-      "2026-01-20 Purchase: USD -25.00",
+      "Transaction 1",
+      "Date: 2026-01-10",
+      "Description: HEALTH CHECK DEPOSIT",
+      "Amount: USD 50.00",
+      "Reference: HC-DEP",
+      "Category: Income",
+      "Transaction 2",
+      "Date: 2026-01-20",
+      "Description: HEALTH CHECK PURCHASE",
+      "Amount: USD -25.00",
+      "Reference: HC-PUR",
+      "Category: Test Expenses",
       "Synthetic data only. No customer data."
     ].freeze
     PDF_MAX_RESPONSE_TOKENS = 512
@@ -125,6 +147,40 @@ class AiHealth
         verification: :synthetic_pdf_vision,
         processing_mode: :vision
       )
+    end
+
+    def pdf_transaction_extraction(provider:, endpoint:, access_token:, model:, openai_compatible: false)
+      run(
+        component: "pdf_transaction_extraction",
+        provider_key: provider,
+        endpoint: endpoint,
+        model: model,
+        credential: access_token,
+        verification: :synthetic_bank_statement
+      ) do
+        result = Timeout.timeout(timeout) do
+          case provider
+          when :openai
+            Provider::Openai::BankStatementExtractor.new(
+              client: openai_client(access_token:, endpoint:),
+              pdf_content: synthetic_pdf,
+              model: model,
+              custom_provider: openai_compatible
+            ).extract
+          when :anthropic
+            Provider::Anthropic::BankStatementExtractor.new(
+              client: anthropic_client(access_token:, endpoint:),
+              pdf_content: synthetic_pdf,
+              model: model
+            ).extract
+          else
+            raise Failure, :unsupported_provider
+          end
+        end
+
+        raise Failure, :schema_mismatch unless valid_transaction_extraction_result?(result)
+        raise Failure, :recognition_mismatch unless recognized_transaction_extraction_result?(result)
+      end
     end
 
     def openai_vector_store(endpoint:, access_token:)
@@ -284,11 +340,33 @@ class AiHealth
         PDF_TEST_EXPECTED_DATA.all? { |key, value| data[key] == value }
       end
 
+      def valid_transaction_extraction_result?(result)
+        return false unless result.is_a?(Hash)
+
+        data = result.symbolize_keys
+        required_keys = PDF_TRANSACTION_TEST_EXPECTED_DATA.keys
+        return false unless (required_keys - data.keys).empty?
+        return false unless data[:period].is_a?(Hash)
+        return false unless data[:transactions].is_a?(Array)
+
+        data[:transactions].all? do |transaction|
+          transaction.is_a?(Hash) &&
+            %i[date amount name category notes].all? { |key| transaction.key?(key) }
+        end
+      end
+
+      def recognized_transaction_extraction_result?(result)
+        data = result.symbolize_keys
+        expected = PDF_TRANSACTION_TEST_EXPECTED_DATA
+
+        expected.all? { |key, value| data[key] == value }
+      end
+
       def synthetic_pdf
         return @synthetic_pdf if defined?(@synthetic_pdf)
 
         text = PDF_TEST_LINES.map { |line| "(#{line}) Tj T*" }.join("\n")
-        content = "BT /F1 14 Tf 24 275 Td 22 TL\n#{text}\nET\n".b
+        content = "BT /F1 11 Tf 24 285 Td 13 TL\n#{text}\nET\n".b
         objects = [
           "<< /Type /Catalog /Pages 2 0 R >>",
           "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
