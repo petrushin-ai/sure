@@ -493,6 +493,53 @@ index 64d1fb24..00a97bec 100644
 +      value.present? ? value.to_d : nil
 +    end
  end
+diff --git a/app/models/binance_account/security_resolver.rb b/app/models/binance_account/security_resolver.rb
+index 133819c1..97fc1a30 100644
+--- a/app/models/binance_account/security_resolver.rb
++++ b/app/models/binance_account/security_resolver.rb
+@@ -1,23 +1,28 @@
+ # frozen_string_literal: true
+ 
+-# Resolves or creates a Security for a given Binance ticker.
+-# First attempts Security::Resolver; on failure, falls back to find_or_initialize_by
+-# and saves an offline security so syncs are not blocked by provider outages.
++# Resolves or creates the canonical local Security for a Binance asset.
++#
++# Generic provider search is intentionally not used here. A bare crypto symbol
++# such as CRYPTO:BTC can otherwise fuzzy-match an arbitrary market pair (for
++# example BTCBRL). That changes the holding's identity and currency, and makes
++# Sure request a foreign-exchange rate for every historical holding date.
+ class BinanceAccount::SecurityResolver
+   EXCHANGE_MIC = "XBNC"
+ 
+   def self.resolve(ticker, symbol)
+-    result = Security::Resolver.new(ticker).resolve
+-    if result.nil?
+-      Rails.logger.debug "BinanceAccount::SecurityResolver - primary resolver returned nil for #{ticker}"
+-    end
+-    result
++    normalized_ticker = ticker.to_s.strip.upcase
++
++    Security.find_by(ticker: normalized_ticker) ||
++      Security.create!(
++        ticker: normalized_ticker,
++        name: symbol,
++        exchange_operating_mic: EXCHANGE_MIC,
++        offline: true
++      )
++  rescue ActiveRecord::RecordNotUnique
++    Security.find_by!(ticker: normalized_ticker)
+   rescue StandardError => e
+-    Rails.logger.warn "BinanceAccount::SecurityResolver - resolver failed for #{ticker}: #{e.message}"
+-    Security.find_or_initialize_by(ticker: ticker, exchange_operating_mic: EXCHANGE_MIC).tap do |sec|
+-      sec.name = symbol if sec.name.blank?
+-      sec.offline = true unless sec.offline
+-      sec.save! if sec.changed?
+-    end
++    Rails.logger.warn "BinanceAccount::SecurityResolver - canonical resolution failed for #{ticker}: #{e.message}"
++    nil
+   end
+ end
 diff --git a/app/models/binance_item.rb b/app/models/binance_item.rb
 index 7843dfd2..a38bccf6 100644
 --- a/app/models/binance_item.rb
@@ -2728,10 +2775,10 @@ index 40f62952..62b36544 100644
    end
 diff --git a/docs/UPSTREAM.md b/docs/UPSTREAM.md
 new file mode 100644
-index 00000000..de84e2a2
+index 00000000..15fe06e3
 --- /dev/null
 +++ b/docs/UPSTREAM.md
-@@ -0,0 +1,283 @@
+@@ -0,0 +1,298 @@
 +# Maintaining the Petrushin AI Sure fork
 +
 +This repository is a native GitHub fork of [`we-promise/sure`](https://github.com/we-promise/sure).
@@ -2878,6 +2925,21 @@ index 00000000..de84e2a2
 +  requests and distinguishes invalid base credentials from unavailable
 +  account-type capabilities without losing the successful sources.
 +
++### SURE-009 — Canonical Binance crypto security identity
++
++- Source: direct `main` production fix for the Teknologia fork and
++  [`docs/hosting/binance.md`](hosting/binance.md).
++- Purpose: resolve every Binance asset to its exact `CRYPTO:<asset>` security
++  instead of allowing generic provider search to fuzzy-match an unrelated
++  fiat market pair. This keeps holding identity stable and prevents the first
++  account materialization from issuing a foreign-exchange request for every
++  asset and historical date.
++- Main conflict areas: `app/models/binance_account/security_resolver.rb`,
++  Binance holdings/trade processing and resolver tests.
++- Retirement rule: remove only after upstream guarantees exact crypto asset
++  identity for provider imports and cannot substitute a quote-currency market
++  pair for a bare Binance asset.
++
 +If upstream absorbs a patch, record the upstream PR and commit here, compare
 +behavior and tests, remove only the duplicated downstream implementation, and
 +regenerate the patch. Do not silently delete a ledger entry.
@@ -3017,10 +3079,10 @@ index 00000000..de84e2a2
 +  sufficient.
 diff --git a/docs/hosting/binance.md b/docs/hosting/binance.md
 new file mode 100644
-index 00000000..ee549c0e
+index 00000000..197a28c4
 --- /dev/null
 +++ b/docs/hosting/binance.md
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,111 @@
 +# Binance
 +
 +Sure connects directly to Binance with a read-only API key. No third-party
@@ -3088,6 +3150,14 @@ index 00000000..ee549c0e
 +uses its last successful quote and marks the price as stale. With no prior
 +quote, Sure keeps the asset as unpriced instead of assuming it is worth zero
 +and deleting it. The next sync retries the quote.
++
++## Crypto security identity
++
++Each imported Binance asset is linked to one canonical local security named
++`CRYPTO:<asset>`. The connector does not use fuzzy market-data search for this
++step because a bare asset such as `BTC` must not be substituted with an
++arbitrary fiat pair such as `BTCBRL`. Current holding prices still come from
++Binance and are converted into the family's base currency before import.
 +
 +## Schedule
 +
@@ -3503,6 +3573,47 @@ index 5e7430cd..c808a2c7 100644
    test "failed LLM probe writes a system-wide debug entry and Rails log without secrets" do
      models = stub(list: { "data" => [ { "id" => "another-model" } ] })
      @probe.stubs(:openai_client).returns(stub(models: models))
+diff --git a/test/models/binance_account/security_resolver_test.rb b/test/models/binance_account/security_resolver_test.rb
+new file mode 100644
+index 00000000..b1acc26d
+--- /dev/null
++++ b/test/models/binance_account/security_resolver_test.rb
+@@ -0,0 +1,35 @@
++# frozen_string_literal: true
++
++require "test_helper"
++
++class BinanceAccount::SecurityResolverTest < ActiveSupport::TestCase
++  test "creates a canonical offline security without fuzzy provider search" do
++    Security.where(ticker: "CRYPTO:CANONICALTEST").delete_all
++    Security::Resolver.expects(:new).never
++
++    security = BinanceAccount::SecurityResolver.resolve("CRYPTO:canonicaltest", "CANONICALTEST")
++
++    assert_equal "CRYPTO:CANONICALTEST", security.ticker
++    assert_equal "CANONICALTEST", security.name
++    assert_equal "XBNC", security.exchange_operating_mic
++    assert security.offline?
++  ensure
++    Security.where(ticker: "CRYPTO:CANONICALTEST").delete_all
++  end
++
++  test "reuses an existing exact ticker instead of creating a market-pair security" do
++    existing = Security.create!(
++      ticker: "CRYPTO:REUSETEST",
++      name: "Existing crypto security",
++      offline: true
++    )
++    Security::Resolver.expects(:new).never
++
++    resolved = BinanceAccount::SecurityResolver.resolve("CRYPTO:REUSETEST", "REUSETEST")
++
++    assert_equal existing, resolved
++    assert_equal 1, Security.where(ticker: "CRYPTO:REUSETEST").count
++  ensure
++    Security.where(ticker: "CRYPTO:REUSETEST").delete_all
++  end
++end
 diff --git a/test/models/binance_item/coin_futures_importer_test.rb b/test/models/binance_item/coin_futures_importer_test.rb
 new file mode 100644
 index 00000000..1d72e544

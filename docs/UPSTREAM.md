@@ -144,6 +144,21 @@ image publish. A stale or non-applicable patch is a hard failure.
   requests and distinguishes invalid base credentials from unavailable
   account-type capabilities without losing the successful sources.
 
+### SURE-009 — Canonical Binance crypto security identity
+
+- Source: direct `main` production fix for the Teknologia fork and
+  [`docs/hosting/binance.md`](hosting/binance.md).
+- Purpose: resolve every Binance asset to its exact `CRYPTO:<asset>` security
+  instead of allowing generic provider search to fuzzy-match an unrelated
+  fiat market pair. This keeps holding identity stable and prevents the first
+  account materialization from issuing a foreign-exchange request for every
+  asset and historical date.
+- Main conflict areas: `app/models/binance_account/security_resolver.rb`,
+  Binance holdings/trade processing and resolver tests.
+- Retirement rule: remove only after upstream guarantees exact crypto asset
+  identity for provider imports and cannot substitute a quote-currency market
+  pair for a bare Binance asset.
+
 If upstream absorbs a patch, record the upstream PR and commit here, compare
 behavior and tests, remove only the duplicated downstream implementation, and
 regenerate the patch. Do not silently delete a ledger entry.

@@ -66,6 +66,14 @@ uses its last successful quote and marks the price as stale. With no prior
 quote, Sure keeps the asset as unpriced instead of assuming it is worth zero
 and deleting it. The next sync retries the quote.
 
+## Crypto security identity
+
+Each imported Binance asset is linked to one canonical local security named
+`CRYPTO:<asset>`. The connector does not use fuzzy market-data search for this
+step because a bare asset such as `BTC` must not be substituted with an
+arbitrary fiat pair such as `BTCBRL`. Current holding prices still come from
+Binance and are converted into the family's base currency before import.
+
 ## Schedule
 
 The native Sidekiq scheduler enqueues every active Binance connection every
