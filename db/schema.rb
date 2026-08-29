@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_26_090000) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_29_090000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pgcrypto"
@@ -313,6 +313,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_26_090000) do
     t.string "status", default: "good", null: false
     t.datetime "sync_start_date"
     t.datetime "updated_at", null: false
+    t.index ["family_id", "api_key"], name: "idx_binance_items_unique_active_api_key_by_family", unique: true, where: "(scheduled_for_deletion = false)"
     t.index ["family_id"], name: "index_binance_items_on_family_id"
     t.index ["status"], name: "index_binance_items_on_status"
   end

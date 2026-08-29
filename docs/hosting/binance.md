@@ -3,6 +3,24 @@
 Sure connects directly to Binance with a read-only API key. No third-party
 aggregator or workflow service is involved.
 
+## Multiple connections and account names
+
+A family can add multiple Binance connections. Each connection has its own
+encrypted API key pair and sync lifecycle, so personal, business and Binance
+sub-accounts can be imported independently. Use a different Binance API key
+for each connection; Sure rejects a duplicate active key within the same
+family.
+
+The connection name identifies the credential in provider settings. During
+account setup, the imported Sure account name can be edited independently.
+Later syncs update balances, holdings and transactions but never overwrite the
+chosen account name. Renaming a connection also leaves an already imported
+account name unchanged.
+
+Each key produces one combined Sure account containing all supported Binance
+balance sources listed below. This avoids double counting between source types
+while keeping different API keys in separate Sure accounts.
+
 ## Balance coverage
 
 Every sync reads the balance/equity endpoints for:
@@ -42,9 +60,12 @@ and deleting it. The next sync retries the quote.
 ## Schedule
 
 The native Sidekiq scheduler enqueues every active Binance connection every
-four hours, at minute 17. Manual **Sync now** remains available. The scheduled
-job uses the same sync pipeline, idempotency rules and debug logging as a manual
-sync.
+four hours, at minute 17. Connections are staggered by 30 seconds, capped at a
+10-minute fan-out window, to avoid an API burst when several keys are present.
+Manual **Sync now** remains available. The scheduled job uses the same sync
+pipeline, connection-scoped idempotency rules and debug logging as a manual
+sync. A failure for one key does not prevent the remaining connections from
+being scheduled.
 
 ## API-key permissions
 

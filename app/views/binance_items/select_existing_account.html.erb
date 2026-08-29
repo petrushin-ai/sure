@@ -24,6 +24,7 @@
                   <span class="text-xs text-secondary">
                     <%= ba.currency %> &bull; <%= number_with_delimiter(ba.current_balance || 0, delimiter: ",") %>
                   </span>
+                  <span class="text-xs text-secondary"><%= t(".connection", name: ba.binance_item.name) %></span>
                   <% if ba.current_account.present? %>
                     <span class="text-xs text-secondary"><%= t(".currently_linked_to", account_name: ba.current_account.name) %></span>
                   <% end %>

@@ -90,6 +90,6 @@ bin/verify-downstream-patch
 
 printf '\nUpgrade branch is ready. Next steps:\n'
 printf '  1. Run the focused and full test suites from docs/UPSTREAM.md.\n'
-printf '  2. git push -u origin %s\n' "$branch_name"
-printf '  3. gh pr create --repo petrushin-ai/sure --base main --head %s\n' "$branch_name"
-printf '  4. Merge only after CI is green; publish and deploy by immutable digest.\n'
+printf '  2. git switch main && git merge --no-ff --no-edit %s\n' "$branch_name"
+printf '  3. bin/verify-downstream-patch && git push origin main\n'
+printf '  4. Publish and deploy only after direct-main CI is green.\n'

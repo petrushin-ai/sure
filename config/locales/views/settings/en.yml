@@ -465,6 +465,11 @@ en:
         sync: Sync
         disconnect_confirm: Are you sure you want to disconnect this Coinbase connection? Your synced accounts will become manual accounts.
       binance_panel:
+        default_connection_name: Binance
+        add_connection: Add Binance connection
+        update_connection: Update connection
+        connection_name_label: Connection name
+        connection_name_placeholder: Main Binance
         setup_instructions: "To connect Binance, create a read-only API key:"
         step1_html: 'Go to <a href="https://www.binance.com/en/my/settings/api-management" target="_blank" rel="noopener noreferrer" class="underline">Binance API Management</a>'
         step2: "Create a new API key with Enable Reading permission only"
@@ -476,15 +481,19 @@ en:
         ip_hint_contact_admin: "Contact your administrator to obtain the app server's egress IP address."
         api_key_label: API Key
         api_key_placeholder: Paste your Binance API Key
+        keep_api_key_placeholder: Leave blank to keep the existing API key
         api_secret_label: API Secret
         api_secret_placeholder: Paste your Binance API Secret
+        keep_api_secret_placeholder: Leave blank to keep the existing API secret
         connect_button: Connect Binance
+        setup_accounts: Setup account
         syncing: Syncing...
         sync: Sync
         historical_import: "Historical Import Settings"
         sync_start_date_label: "Import data from"
         sync_start_date_help: "Select how far back to fetch historical trades."
-        disconnect_confirm: "Are you sure you want to disconnect Binance?"
+        disconnect: Disconnect
+        disconnect_confirm: "Are you sure you want to disconnect %{name}?"
       kraken_panel:
         step1_html: 'Go to <a href="https://pro.kraken.com/app/settings/api" target="_blank" rel="noopener noreferrer" class="underline">Kraken API settings</a>'
         step2: "Create an API key with Query Funds and Query Closed Orders & Trades only."

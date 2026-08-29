@@ -15,6 +15,7 @@ class BinanceItem < ApplicationRecord
   validates :name, presence: true
   validates :api_key, presence: true
   validates :api_secret, presence: true
+  validate :api_key_unique_within_family
 
   belongs_to :family
   has_one_attached :logo, dependent: :purge_later
@@ -26,6 +27,8 @@ class BinanceItem < ApplicationRecord
   scope :syncable, -> { active }
   scope :ordered, -> { order(created_at: :desc) }
   scope :needs_update, -> { where(status: :requires_update) }
+
+  before_validation :strip_connection_fields
 
   def destroy_later
     update!(scheduled_for_deletion: true)
@@ -151,7 +154,7 @@ class BinanceItem < ApplicationRecord
   end
 
   def institution_display_name
-    institution_name.presence || institution_domain.presence || name
+    name.presence || institution_name.presence || institution_domain
   end
 
   def credentials_configured?
@@ -166,4 +169,23 @@ class BinanceItem < ApplicationRecord
       institution_color: "#F0B90B"
     )
   end
+
+  private
+
+    def strip_connection_fields
+      self.name = name.to_s.strip if name_changed? && !name.nil?
+      self.api_key = api_key.to_s.strip if api_key_changed? && !api_key.nil?
+      self.api_secret = api_secret.to_s.strip if api_secret_changed? && !api_secret.nil?
+    end
+
+    def api_key_unique_within_family
+      return if family_id.blank? || api_key.blank?
+
+      duplicate = self.class.active
+        .where(family_id: family_id, api_key: api_key)
+        .where.not(id: id)
+        .exists?
+
+      errors.add(:api_key, :taken) if duplicate
+    end
 end

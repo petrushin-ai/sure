@@ -39,6 +39,54 @@ class BinanceItemTest < ActiveSupport::TestCase
     assert_includes item.errors[:api_secret], "can't be blank"
   end
 
+  test "allows multiple connections with different keys in one family" do
+    other = BinanceItem.new(
+      family: @family,
+      name: "Trading Binance",
+      api_key: "another_key",
+      api_secret: "another_secret"
+    )
+
+    assert other.valid?
+  end
+
+  test "rejects a duplicate active API key in one family" do
+    duplicate = BinanceItem.new(
+      family: @family,
+      name: "Duplicate Binance",
+      api_key: @item.api_key,
+      api_secret: "another_secret"
+    )
+
+    refute duplicate.valid?
+    assert_includes duplicate.errors[:api_key], "has already been taken"
+  end
+
+  test "allows reusing a key after the old connection is scheduled for deletion" do
+    @item.update!(scheduled_for_deletion: true)
+    replacement = BinanceItem.new(
+      family: @family,
+      name: "Replacement Binance",
+      api_key: @item.api_key,
+      api_secret: "replacement_secret"
+    )
+
+    assert replacement.valid?
+  end
+
+  test "strips connection names and credentials" do
+    item = BinanceItem.create!(
+      family: @family,
+      name: "  Savings Binance  ",
+      api_key: "  stripped_key  ",
+      api_secret: "  stripped_secret  "
+    )
+
+    assert_equal "Savings Binance", item.name
+    assert_equal "stripped_key", item.api_key
+    assert_equal "stripped_secret", item.api_secret
+  end
+
   test "active scope excludes scheduled for deletion" do
     @item.update!(scheduled_for_deletion: true)
     refute_includes BinanceItem.active.to_a, @item
@@ -64,6 +112,12 @@ class BinanceItemTest < ActiveSupport::TestCase
     assert_equal "binance.com", @item.institution_domain
     assert_equal "https://www.binance.com", @item.institution_url
     assert_equal "#F0B90B", @item.institution_color
+  end
+
+  test "institution_display_name prefers the connection name" do
+    @item.set_binance_institution_defaults!
+
+    assert_equal "My Binance", @item.institution_display_name
   end
 
   test "sync_status_summary with no accounts" do

@@ -12,6 +12,8 @@ en:
       title: Import Binance Account
       subtitle: Select which portfolios to track
       instructions: Select the Binance portfolios you want to import. Only portfolios with balances are shown.
+      account_name_label: Account name
+      account_name_help: This is the name Sure will use for the imported account. Later syncs will not overwrite it.
       no_accounts: All accounts have been imported.
       accounts_count:
         one: "%{count} account available"
@@ -55,6 +57,7 @@ en:
       wait_for_sync: Wait for Binance to finish syncing
       check_provider_health: Check that your Binance API credentials are valid
       currently_linked_to: "Currently linked to: %{account_name}"
+      connection: "Connection: %{name}"
       link: Link
       cancel: Cancel
     link_existing_account:

@@ -63,12 +63,15 @@ ru:
     select_existing_account:
       cancel: Отмена
       check_provider_health: Проверьте, действительны ли ваши API-данные Binance
+      connection: 'Подключение: %{name}'
       currently_linked_to: 'В настоящее время связано с: %{account_name}'
       link: Связать
       no_accounts_found: Счета Binance не найдены.
       title: Связать счёт Binance
       wait_for_sync: Подождите, пока Binance завершит синхронизацию
     setup_accounts:
+      account_name_label: Название счёта
+      account_name_help: Это название будет использоваться для импортированного счёта. Последующие синхронизации его не изменят.
       accounts_count:
         few: Доступно %{count} счёта
         many: Доступно %{count} счетов

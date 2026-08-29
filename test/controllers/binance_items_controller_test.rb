@@ -29,6 +29,45 @@ class BinanceItemsControllerTest < ActionDispatch::IntegrationTest
     assert_response :redirect
   end
 
+  test "creates a second named Binance connection" do
+    assert_difference "@family.binance_items.count", 1 do
+      post binance_items_url, params: {
+        binance_item: {
+          name: "Business Binance",
+          api_key: "business_key",
+          api_secret: "business_secret"
+        }
+      }
+    end
+
+    assert_redirected_to settings_providers_path
+    assert_equal "Business Binance", @family.binance_items.order(:created_at).last.name
+  end
+
+  test "updates a connection name without clearing blank credentials" do
+    patch binance_item_url(@binance_item), params: {
+      binance_item: {
+        name: "Long-term Binance",
+        api_key: "",
+        api_secret: ""
+      }
+    }
+
+    assert_redirected_to settings_providers_path
+    @binance_item.reload
+    assert_equal "Long-term Binance", @binance_item.name
+    assert_equal "test_key", @binance_item.api_key
+    assert_equal "test_secret", @binance_item.api_secret
+  end
+
+  test "provider panel keeps the add connection form after a connection exists" do
+    get connect_form_settings_providers_url(provider_key: "binance")
+
+    assert_response :success
+    assert_select "#binance-providers-panel form[action='#{binance_items_path}']"
+    assert_select "#binance-providers-panel input[name='binance_item[name]']"
+  end
+
   test "should show setup_accounts page" do
     get setup_accounts_binance_item_url(@binance_item)
     assert_response :success
@@ -53,6 +92,24 @@ class BinanceItemsControllerTest < ActionDispatch::IntegrationTest
     binance_account.reload
     assert_not_nil binance_account.current_account
     assert_equal "Crypto", binance_account.current_account.accountable_type
+  end
+
+  test "complete_account_setup uses the requested account name" do
+    binance_account = @binance_item.binance_accounts.create!(
+      name: "Test Binance",
+      account_type: "combined",
+      currency: "USD",
+      current_balance: 1000.0
+    )
+
+    post complete_account_setup_binance_item_url(@binance_item), params: {
+      selected_accounts: [ binance_account.id ],
+      account_names: { binance_account.id.to_s => "Family savings" }
+    }
+
+    assert_response :redirect
+    assert_equal "Family savings", binance_account.reload.name
+    assert_equal "Family savings", binance_account.current_account.name
   end
 
   test "complete_account_setup updates sync_start_date when provided with a valid past date" do

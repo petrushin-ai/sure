@@ -29,6 +29,16 @@ class BinanceItem::ImporterTest < ActiveSupport::TestCase
     ba = @item.binance_accounts.first
     assert_equal "combined", ba.account_type
     assert_equal "USD", ba.currency
+    assert_equal @item.name, ba.name
+  end
+
+  test "later syncs do not overwrite a custom imported account name" do
+    BinanceItem::Importer.new(@item, binance_provider: @provider).import
+    @item.binance_accounts.first.update!(name: "Family savings")
+
+    BinanceItem::Importer.new(@item, binance_provider: @provider).import
+
+    assert_equal "Family savings", @item.binance_accounts.first.reload.name
   end
 
   test "calculates combined USD balance" do

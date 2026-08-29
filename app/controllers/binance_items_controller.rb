@@ -20,7 +20,7 @@ class BinanceItemsController < ApplicationController
 
   def create
     @binance_item = Current.family.binance_items.build(binance_item_params)
-    @binance_item.name ||= t(".default_name")
+    @binance_item.name = t(".default_name") if @binance_item.name.blank?
 
     if @binance_item.save
       @binance_item.set_binance_institution_defaults!
@@ -28,9 +28,9 @@ class BinanceItemsController < ApplicationController
 
       if turbo_frame_request?
         flash.now[:notice] = t(".success")
-        @binance_items = Current.family.binance_items.ordered
+        @binance_items = Current.family.binance_items.active.ordered
         render turbo_stream: [
-          turbo_stream.update(
+          turbo_stream.replace(
             "binance-providers-panel",
             partial: "settings/providers/binance_panel",
             locals: { binance_items: @binance_items }
@@ -59,9 +59,9 @@ class BinanceItemsController < ApplicationController
     if @binance_item.update(binance_item_params)
       if turbo_frame_request?
         flash.now[:notice] = t(".success")
-        @binance_items = Current.family.binance_items.ordered
+        @binance_items = Current.family.binance_items.active.ordered
         render turbo_stream: [
-          turbo_stream.update(
+          turbo_stream.replace(
             "binance-providers-panel",
             partial: "settings/providers/binance_panel",
             locals: { binance_items: @binance_items }
@@ -113,7 +113,7 @@ class BinanceItemsController < ApplicationController
   def select_existing_account
     @account = Current.family.accounts.find(params[:account_id])
 
-    @available_binance_accounts = Current.family.binance_items
+    @available_binance_accounts = Current.family.binance_items.active
       .includes(binance_accounts: [ :account, { account_provider: :account } ])
       .flat_map(&:binance_accounts)
       .select { |ba| ba.account.present? || ba.account_provider.nil? }
@@ -238,6 +238,9 @@ class BinanceItemsController < ApplicationController
         ba.with_lock do
           next if ba.account.present?
 
+          requested_name = setup_params[:account_names]&.[](ba.id.to_s).to_s.strip
+          ba.update!(name: requested_name) if requested_name.present? && requested_name != ba.name
+
           account = Account.create_from_binance_account(ba)
           provider_link = ba.ensure_account_provider!(account)
 
@@ -298,10 +301,15 @@ class BinanceItemsController < ApplicationController
     end
 
     def binance_item_params
-      params.require(:binance_item).permit(:name, :sync_start_date, :api_key, :api_secret)
+      permitted = params.require(:binance_item).permit(:name, :sync_start_date, :api_key, :api_secret)
+      if @binance_item&.persisted?
+        permitted.delete(:api_key) if permitted[:api_key].blank?
+        permitted.delete(:api_secret) if permitted[:api_secret].blank?
+      end
+      permitted
     end
 
     def complete_account_setup_params
-      params.permit(:sync_start_date, selected_accounts: [])
+      params.permit(:sync_start_date, selected_accounts: [], account_names: {})
     end
 end

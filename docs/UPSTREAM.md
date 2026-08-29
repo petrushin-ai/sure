@@ -10,9 +10,11 @@ It keeps a small set of production-required downstream patches for the
   the multi-architecture image build.
 - `we-digital/devops` owns the pinned production image digest, backups,
   rollout, health verification, and rollback.
-- Never deploy a mutable branch or tag. Merge a reviewed fork PR, wait for the
-  publish workflow, inspect the OCI revision, and pin the resulting index
-  digest in `deployments/sure-teknologia/compose.yml`.
+- Never deploy a mutable branch or tag. Approved Teknologia changes are
+  committed directly to `petrushin-ai/sure:main` without a PR. Every code
+  commit must include this ledger and a regenerated, verified downstream
+  patch. Wait for the publish workflow, inspect the OCI revision, and pin the
+  resulting index digest in `deployments/sure-teknologia/compose.yml`.
 
 ## Source-of-truth artifacts
 
@@ -28,8 +30,8 @@ It keeps a small set of production-required downstream patches for the
   applies the patch with Git's three-way merge support, advances the marker,
   and regenerates the patch.
 
-CI runs `bin/verify-downstream-patch` on every fork PR and before every image
-publish. A stale or non-applicable patch is a hard failure.
+CI runs `bin/verify-downstream-patch` on every fork change and before every
+image publish. A stale or non-applicable patch is a hard failure.
 
 ## Active downstream patch ledger
 
@@ -95,8 +97,8 @@ publish. A stale or non-applicable patch is a hard failure.
 ### SURE-006 — Complete native Binance balance synchronization
 
 - Source: [`petrushin-ai/sure#6`](https://github.com/petrushin-ai/sure/pull/6)
-  and [`docs/hosting/binance.md`](hosting/binance.md); record the merge commit
-  here after merge.
+  and [`docs/hosting/binance.md`](hosting/binance.md), merge commit
+  `04c72b983d94a63c0eb1419c6d7c0f4b56e33474`.
 - Purpose: synchronize Spot, Funding, Cross/Isolated Margin, Simple Earn,
   BFUSD/RWUSD, USDⓈ-M/COIN-M Futures, Options and Portfolio Margin directly
   from Binance; exclude current positions worth less than `$1`; retain
@@ -109,6 +111,23 @@ publish. A stale or non-applicable patch is a hard failure.
   coverage, Portfolio Margin de-duplication, pagination, `$1` cutoff semantics,
   partial-source retention/diagnostics, and native scheduled synchronization.
 
+### SURE-007 — Multiple named Binance connections
+
+- Source: direct `main` change authorized for the Teknologia fork and
+  [`docs/hosting/binance.md`](hosting/binance.md).
+- Purpose: allow one family to connect multiple Binance API key pairs, name
+  each connection and imported Sure account independently, preserve existing
+  credentials during name-only edits, reject a duplicate active key within a
+  family, keep every import scoped to its owning connection, and stagger
+  scheduled connection syncs to reduce Binance rate-limit bursts.
+- Main conflict areas: `app/models/binance_item.rb`,
+  `app/models/binance_item/importer.rb`, `app/controllers/binance_items_controller.rb`,
+  Binance settings/setup views and locales, and the scheduled Binance jobs.
+- Retirement rule: remove only after upstream supports multiple independently
+  named Binance credentials per family with connection-scoped imports,
+  non-destructive credential edits, duplicate-key protection, stable account
+  names and bounded scheduled fan-out.
+
 If upstream absorbs a patch, record the upstream PR and commit here, compare
 behavior and tests, remove only the duplicated downstream implementation, and
 regenerate the patch. Do not silently delete a ledger entry.
@@ -116,14 +135,19 @@ regenerate the patch. Do not silently delete a ledger entry.
 ## Ordinary downstream changes
 
 Every downstream code change must update this ledger when its behavior or
-retirement condition differs from the existing entries. After committing the
-source change:
+retirement condition differs from the existing entries. The source, ledger and
+generated patch belong in one final direct-main commit. Create the local commit
+from the source and ledger first so the generator can diff `HEAD`, then amend
+the generated patch into that same commit before pushing:
 
 ```bash
+git add <source-and-test-files> docs/UPSTREAM.md
+git commit -m "Describe the downstream change"
 bin/regenerate-downstream-patch
-git add petrushin-ai-custom.patch docs/UPSTREAM.md
+git add petrushin-ai-custom.patch
 git commit --amend --no-edit
 bin/verify-downstream-patch
+git push origin main
 ```
 
 The patch must remain a deterministic representation of the complete fork
@@ -210,21 +234,23 @@ Also run the full GitHub CI suite. Provider preflight must use a synthetic PDF
 with no customer data and must confirm exact metadata plus exact transaction
 values; successful HTTP status alone is insufficient.
 
-### 4. PR, build, and deploy
+### 4. Direct-main build and deploy
 
-Always specify the fork explicitly so a PR cannot be opened against upstream:
+Keep the verified rebase result and regenerated patch in the same commit, then
+push the fork explicitly. Do not open a PR for Teknologia fork changes:
 
 ```bash
-git push -u origin chore/upstream-<target-sha>
-gh pr create --repo petrushin-ai/sure --base main \
-  --head chore/upstream-<target-sha>
+git switch main
+git merge --no-ff --no-edit chore/upstream-<target-sha>
+bin/verify-downstream-patch
+git push origin main
 ```
 
-After merge:
+After push:
 
 1. wait for `Publish Docker image` to finish successfully;
 2. verify the OCI index contains amd64 and arm64 and that
-   `org.opencontainers.image.revision` equals the fork merge commit;
+   `org.opencontainers.image.revision` equals the pushed fork commit;
 3. update only the immutable digest in
    `we-digital/devops/deployments/sure-teknologia/compose.yml`;
 4. follow `we-digital/devops/docs/runbooks/sure-teknologia.md` for backup,
@@ -232,7 +258,7 @@ After merge:
 
 ## Rollback
 
-- Before merge, return to the local safety tag printed by
+- Before pushing `main`, return to the local safety tag printed by
   `bin/upgrade-upstream`; never force-push `main`.
 - After deployment, restore the previous image digest through
   `we-digital/devops` and rerun its deployment procedure.

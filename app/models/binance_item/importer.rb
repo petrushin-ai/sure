@@ -201,9 +201,9 @@ class BinanceItem::Importer
 
     def upsert_binance_account(all_assets:, total_usd:, results:)
       ba = binance_item.binance_accounts.find_or_initialize_by(account_type: "combined")
+      ba.name = binance_item.name if ba.new_record? || ba.name.blank?
 
       ba.assign_attributes(
-        name: binance_item.institution_name.presence || "Binance",
         currency: "USD",
         current_balance: total_usd,
         institution_metadata: build_institution_metadata(all_assets),

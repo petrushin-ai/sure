@@ -73,26 +73,133 @@ index 3dc55594..d5bfb86e 100644
  ## Backstory
  
  The [Maybe Finance](https://github.com/maybe-finance/maybe) (archived/abandoned repo) team spent most of 2021–2022 building a full-featured personal finance and wealth management app. It even included an “Ask an Advisor” feature that connected users with a real CFP/CFA — all included with your subscription.
+diff --git a/app/controllers/binance_items_controller.rb b/app/controllers/binance_items_controller.rb
+index 292d77cc..de08bbab 100644
+--- a/app/controllers/binance_items_controller.rb
++++ b/app/controllers/binance_items_controller.rb
+@@ -20,7 +20,7 @@ class BinanceItemsController < ApplicationController
+ 
+   def create
+     @binance_item = Current.family.binance_items.build(binance_item_params)
+-    @binance_item.name ||= t(".default_name")
++    @binance_item.name = t(".default_name") if @binance_item.name.blank?
+ 
+     if @binance_item.save
+       @binance_item.set_binance_institution_defaults!
+@@ -28,9 +28,9 @@ class BinanceItemsController < ApplicationController
+ 
+       if turbo_frame_request?
+         flash.now[:notice] = t(".success")
+-        @binance_items = Current.family.binance_items.ordered
++        @binance_items = Current.family.binance_items.active.ordered
+         render turbo_stream: [
+-          turbo_stream.update(
++          turbo_stream.replace(
+             "binance-providers-panel",
+             partial: "settings/providers/binance_panel",
+             locals: { binance_items: @binance_items }
+@@ -59,9 +59,9 @@ class BinanceItemsController < ApplicationController
+     if @binance_item.update(binance_item_params)
+       if turbo_frame_request?
+         flash.now[:notice] = t(".success")
+-        @binance_items = Current.family.binance_items.ordered
++        @binance_items = Current.family.binance_items.active.ordered
+         render turbo_stream: [
+-          turbo_stream.update(
++          turbo_stream.replace(
+             "binance-providers-panel",
+             partial: "settings/providers/binance_panel",
+             locals: { binance_items: @binance_items }
+@@ -113,7 +113,7 @@ class BinanceItemsController < ApplicationController
+   def select_existing_account
+     @account = Current.family.accounts.find(params[:account_id])
+ 
+-    @available_binance_accounts = Current.family.binance_items
++    @available_binance_accounts = Current.family.binance_items.active
+       .includes(binance_accounts: [ :account, { account_provider: :account } ])
+       .flat_map(&:binance_accounts)
+       .select { |ba| ba.account.present? || ba.account_provider.nil? }
+@@ -238,6 +238,9 @@ class BinanceItemsController < ApplicationController
+         ba.with_lock do
+           next if ba.account.present?
+ 
++          requested_name = setup_params[:account_names]&.[](ba.id.to_s).to_s.strip
++          ba.update!(name: requested_name) if requested_name.present? && requested_name != ba.name
++
+           account = Account.create_from_binance_account(ba)
+           provider_link = ba.ensure_account_provider!(account)
+ 
+@@ -298,10 +301,15 @@ class BinanceItemsController < ApplicationController
+     end
+ 
+     def binance_item_params
+-      params.require(:binance_item).permit(:name, :sync_start_date, :api_key, :api_secret)
++      permitted = params.require(:binance_item).permit(:name, :sync_start_date, :api_key, :api_secret)
++      if @binance_item&.persisted?
++        permitted.delete(:api_key) if permitted[:api_key].blank?
++        permitted.delete(:api_secret) if permitted[:api_secret].blank?
++      end
++      permitted
+     end
+ 
+     def complete_account_setup_params
+-      params.permit(:sync_start_date, selected_accounts: [])
++      params.permit(:sync_start_date, selected_accounts: [], account_names: {})
+     end
+ end
+diff --git a/app/jobs/sync_binance_connection_job.rb b/app/jobs/sync_binance_connection_job.rb
+new file mode 100644
+index 00000000..fe3beb19
+--- /dev/null
++++ b/app/jobs/sync_binance_connection_job.rb
+@@ -0,0 +1,23 @@
++class SyncBinanceConnectionJob < ApplicationJob
++  queue_as :scheduled
++  sidekiq_options lock: :until_executed, on_conflict: :log
++
++  def perform(binance_item_id)
++    item = BinanceItem.active.find_by(id: binance_item_id)
++    return unless item
++    return if item.syncing?
++
++    item.sync_later
++  rescue => e
++    DebugLogEntry.capture(
++      category: "provider_sync",
++      level: "error",
++      message: "Scheduled Binance connection sync could not be started",
++      source: self.class.name,
++      provider_key: "binance",
++      family: item&.family,
++      metadata: { binance_item_id: binance_item_id, error_class: e.class.name, error: e.message }
++    )
++    raise
++  end
++end
 diff --git a/app/jobs/sync_binance_job.rb b/app/jobs/sync_binance_job.rb
 new file mode 100644
-index 00000000..b8493580
+index 00000000..b74c7b03
 --- /dev/null
 +++ b/app/jobs/sync_binance_job.rb
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,28 @@
 +class SyncBinanceJob < ApplicationJob
++  STAGGER_INTERVAL = 30.seconds
++  MAX_STAGGER = 10.minutes
++
 +  queue_as :scheduled
 +  sidekiq_options lock: :until_executed, on_conflict: :log
 +
 +  def perform
 +    Rails.logger.info("Starting scheduled Binance sync")
 +
-+    BinanceItem.active.find_each do |item|
-+      item.sync_later
++    BinanceItem.active.find_each.with_index do |item, index|
++      wait = [ index * STAGGER_INTERVAL, MAX_STAGGER ].min
++      SyncBinanceConnectionJob.set(wait: wait).perform_later(item.id)
 +    rescue => e
 +      DebugLogEntry.capture(
 +        category: "provider_sync",
 +        level: "error",
-+        message: "Scheduled Binance sync could not be enqueued",
++        message: "Scheduled Binance connection sync could not be enqueued",
 +        source: self.class.name,
 +        provider_key: "binance",
 +        family: item.family,
@@ -386,6 +493,60 @@ index 64d1fb24..00a97bec 100644
 +      value.present? ? value.to_d : nil
 +    end
  end
+diff --git a/app/models/binance_item.rb b/app/models/binance_item.rb
+index 7843dfd2..a38bccf6 100644
+--- a/app/models/binance_item.rb
++++ b/app/models/binance_item.rb
+@@ -15,6 +15,7 @@ class BinanceItem < ApplicationRecord
+   validates :name, presence: true
+   validates :api_key, presence: true
+   validates :api_secret, presence: true
++  validate :api_key_unique_within_family
+ 
+   belongs_to :family
+   has_one_attached :logo, dependent: :purge_later
+@@ -27,6 +28,8 @@ class BinanceItem < ApplicationRecord
+   scope :ordered, -> { order(created_at: :desc) }
+   scope :needs_update, -> { where(status: :requires_update) }
+ 
++  before_validation :strip_connection_fields
++
+   def destroy_later
+     update!(scheduled_for_deletion: true)
+     DestroyJob.perform_later(self)
+@@ -151,7 +154,7 @@ class BinanceItem < ApplicationRecord
+   end
+ 
+   def institution_display_name
+-    institution_name.presence || institution_domain.presence || name
++    name.presence || institution_name.presence || institution_domain
+   end
+ 
+   def credentials_configured?
+@@ -166,4 +169,23 @@ class BinanceItem < ApplicationRecord
+       institution_color: "#F0B90B"
+     )
+   end
++
++  private
++
++    def strip_connection_fields
++      self.name = name.to_s.strip if name_changed? && !name.nil?
++      self.api_key = api_key.to_s.strip if api_key_changed? && !api_key.nil?
++      self.api_secret = api_secret.to_s.strip if api_secret_changed? && !api_secret.nil?
++    end
++
++    def api_key_unique_within_family
++      return if family_id.blank? || api_key.blank?
++
++      duplicate = self.class.active
++        .where(family_id: family_id, api_key: api_key)
++        .where.not(id: id)
++        .exists?
++
++      errors.add(:api_key, :taken) if duplicate
++    end
+ end
 diff --git a/app/models/binance_item/coin_futures_importer.rb b/app/models/binance_item/coin_futures_importer.rb
 new file mode 100644
 index 00000000..9bfcd6be
@@ -524,7 +685,7 @@ index 8371d377..1ba5d2fa 100644
      Rails.logger.error "BinanceItem::FuturesImporter #{binance_item.id} - #{e.message}"
      { assets: [], raw: nil, source: "futures", error: e.message }
 diff --git a/app/models/binance_item/importer.rb b/app/models/binance_item/importer.rb
-index 5490a361..2d9bfd8f 100644
+index 5490a361..978cd1cd 100644
 --- a/app/models/binance_item/importer.rb
 +++ b/app/models/binance_item/importer.rb
 @@ -2,6 +2,8 @@
@@ -632,7 +793,7 @@ index 5490a361..2d9bfd8f 100644
  
        if carried.any?
          Rails.logger.warn(
-@@ -119,27 +135,71 @@ class BinanceItem::Importer
+@@ -119,42 +135,86 @@ class BinanceItem::Importer
        )
      end
  
@@ -714,9 +875,10 @@ index 5490a361..2d9bfd8f 100644
 +
 +    def upsert_binance_account(all_assets:, total_usd:, results:)
        ba = binance_item.binance_accounts.find_or_initialize_by(account_type: "combined")
++      ba.name = binance_item.name if ba.new_record? || ba.name.blank?
  
        ba.assign_attributes(
-@@ -147,14 +207,14 @@ class BinanceItem::Importer
+-        name: binance_item.institution_name.presence || "Binance",
          currency: "USD",
          current_balance: total_usd,
          institution_metadata: build_institution_metadata(all_assets),
@@ -1794,6 +1956,280 @@ index 84ceb560..f646f881 100644
    }
  ] %>
  
+diff --git a/app/views/binance_items/select_existing_account.html.erb b/app/views/binance_items/select_existing_account.html.erb
+index a980fca9..9ba5cfcb 100644
+--- a/app/views/binance_items/select_existing_account.html.erb
++++ b/app/views/binance_items/select_existing_account.html.erb
+@@ -24,6 +24,7 @@
+                   <span class="text-xs text-secondary">
+                     <%= ba.currency %> &bull; <%= number_with_delimiter(ba.current_balance || 0, delimiter: ",") %>
+                   </span>
++                  <span class="text-xs text-secondary"><%= t(".connection", name: ba.binance_item.name) %></span>
+                   <% if ba.current_account.present? %>
+                     <span class="text-xs text-secondary"><%= t(".currently_linked_to", account_name: ba.current_account.name) %></span>
+                   <% end %>
+diff --git a/app/views/binance_items/setup_accounts.html.erb b/app/views/binance_items/setup_accounts.html.erb
+index 323f2fb7..11a725cf 100644
+--- a/app/views/binance_items/setup_accounts.html.erb
++++ b/app/views/binance_items/setup_accounts.html.erb
+@@ -66,30 +66,43 @@
+ 
+             <div class="space-y-2 max-h-96 overflow-y-auto">
+               <% @binance_accounts.each do |binance_account| %>
+-                <label for="ba_<%= binance_account.id %>" class="flex items-center gap-3 p-3 border border-primary rounded-lg hover:bg-surface transition-colors cursor-pointer">
+-                  <%= check_box_tag "selected_accounts[]",
+-                                    binance_account.id,
+-                                    false,
+-                                    id: "ba_#{binance_account.id}",
+-                                    class: "checkbox checkbox--dark",
+-                                    data: { select_all_target: "checkbox" } %>
+-                  <div class="flex-1 min-w-0">
+-                    <p class="font-medium text-primary truncate">
+-                      <%= binance_account.name %>
+-                    </p>
+-                    <p class="text-xs text-secondary">
+-                      <%= binance_account.currency %>
+-                    </p>
+-                  </div>
+-                  <div class="text-right shrink-0">
+-                    <p class="text-sm font-medium text-primary">
+-                      <%= number_with_delimiter(binance_account.current_balance || 0, delimiter: ",") %>
+-                    </p>
+-                    <p class="text-xs text-secondary">
+-                      <%= binance_account.currency %>
+-                    </p>
++                <div class="space-y-3 p-3 border border-primary rounded-lg hover:bg-surface transition-colors">
++                  <label for="ba_<%= binance_account.id %>" class="flex items-center gap-3 cursor-pointer">
++                    <%= check_box_tag "selected_accounts[]",
++                                      binance_account.id,
++                                      false,
++                                      id: "ba_#{binance_account.id}",
++                                      class: "checkbox checkbox--dark",
++                                      data: { select_all_target: "checkbox" } %>
++                    <div class="flex-1 min-w-0">
++                      <p class="font-medium text-primary truncate">
++                        <%= binance_account.name %>
++                      </p>
++                      <p class="text-xs text-secondary">
++                        <%= binance_account.currency %>
++                      </p>
++                    </div>
++                    <div class="text-right shrink-0">
++                      <p class="text-sm font-medium text-primary">
++                        <%= number_with_delimiter(binance_account.current_balance || 0, delimiter: ",") %>
++                      </p>
++                      <p class="text-xs text-secondary">
++                        <%= binance_account.currency %>
++                      </p>
++                    </div>
++                  </label>
++
++                  <div class="field pl-8">
++                    <%= label_tag "account_names_#{binance_account.id}", t(".account_name_label"), class: "label" %>
++                    <%= text_field_tag "account_names[#{binance_account.id}]",
++                                       binance_account.name,
++                                       id: "account_names_#{binance_account.id}",
++                                       class: "input",
++                                       placeholder: @binance_item.name,
++                                       autocomplete: "off" %>
++                    <p class="help-text mt-1 text-xs text-secondary"><%= t(".account_name_help") %></p>
+                   </div>
+-                </label>
++                </div>
+               <% end %>
+             </div>
+           </div>
+diff --git a/app/views/settings/providers/_binance_panel.html.erb b/app/views/settings/providers/_binance_panel.html.erb
+index 1b329f16..4c876e78 100644
+--- a/app/views/settings/providers/_binance_panel.html.erb
++++ b/app/views/settings/providers/_binance_panel.html.erb
+@@ -1,4 +1,4 @@
+-<div class="space-y-4">
++<div id="binance-providers-panel" class="space-y-4">
+   <% items = local_assigns[:binance_items] || @binance_items || Current.family.binance_items.active.ordered %>
+ 
+   <%= render DS::Alert.new(
+@@ -37,74 +37,118 @@
+   <% if items.any? %>
+     <div class="space-y-3">
+       <% items.each do |item| %>
+-        <div class="flex items-center justify-between p-3 bg-container-inset rounded-lg border border-primary">
+-          <div class="flex items-center gap-3">
+-            <div class="w-10 h-10 rounded-full flex items-center justify-center" style="background-color: rgba(240, 185, 11, 0.15);">
+-              <%= icon "coins", size: "md", class: "text-[#F0B90B]" %>
++        <%= render DS::Disclosure.new(variant: :card) do |disclosure| %>
++          <% disclosure.with_summary_content do %>
++            <div class="flex items-center gap-3 min-w-0">
++              <div class="w-10 h-10 rounded-full flex items-center justify-center" style="background-color: rgba(240, 185, 11, 0.15);">
++                <%= icon "coins", size: "md", class: "text-[#F0B90B]" %>
++              </div>
++              <div class="min-w-0">
++                <p class="font-medium text-primary truncate"><%= item.name %></p>
++                <p class="text-xs text-secondary">
++                  <% if item.syncing? %>
++                    <%= t("settings.providers.binance_panel.syncing") %>
++                  <% else %>
++                    <%= item.sync_status_summary %>
++                  <% end %>
++                </p>
++              </div>
+             </div>
+-            <div>
+-              <p class="font-medium text-primary"><%= item.name %></p>
+-              <p class="text-xs text-secondary">
+-                <% if item.syncing? %>
+-                  <%= t("settings.providers.binance_panel.syncing") %>
+-                <% else %>
+-                  <%= item.sync_status_summary %>
+-                <% end %>
+-              </p>
++          <% end %>
++
++          <div class="mt-4 space-y-4">
++            <div class="flex flex-wrap items-center gap-2">
++              <%= button_to sync_binance_item_path(item),
++                            method: :post,
++                            class: "inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-secondary hover:text-primary border border-secondary rounded-lg hover:border-primary",
++                            disabled: item.syncing? do %>
++                <%= icon "refresh-cw", size: "sm" %>
++                <%= t("settings.providers.binance_panel.sync") %>
++              <% end %>
++
++              <% if item.unlinked_accounts_count > 0 %>
++                <%= render DS::Link.new(
++                  text: t("settings.providers.binance_panel.setup_accounts"),
++                  icon: "settings",
++                  variant: "secondary",
++                  href: setup_accounts_binance_item_path(item),
++                  frame: :modal
++                ) %>
++              <% end %>
++
++              <%= button_to binance_item_path(item),
++                            method: :delete,
++                            class: "inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-destructive hover:bg-destructive/10 rounded-lg",
++                            data: { turbo_confirm: t("settings.providers.binance_panel.disconnect_confirm", name: item.name) } do %>
++                <%= icon "trash-2", size: "sm" %>
++                <%= t("settings.providers.binance_panel.disconnect") %>
++              <% end %>
+             </div>
+-          </div>
+-          <div class="flex items-center gap-2">
+-            <% if item.unlinked_accounts_count > 0 %>
+-              <%= render DS::Link.new(
+-                text: t("binance_items.binance_item.setup_action"),
+-                icon: "plus",
+-                variant: "primary",
+-                href: setup_accounts_binance_item_path(item),
+-                frame: :modal
+-              ) %>
+-            <% end %>
+-            <%= button_to sync_binance_item_path(item),
+-                          method: :post,
+-                          class: "inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-secondary hover:text-primary border border-secondary rounded-lg hover:border-primary",
+-                          disabled: item.syncing? do %>
+-              <%= icon "refresh-cw", size: "sm" %>
+-              <%= t("settings.providers.binance_panel.sync") %>
+-            <% end %>
+-            <%= button_to binance_item_path(item),
+-                          method: :delete,
+-                          class: "inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-destructive hover:bg-destructive/10 rounded-lg",
+-                          data: { turbo_confirm: t("settings.providers.binance_panel.disconnect_confirm") } do %>
+-              <%= icon "trash-2", size: "sm" %>
++
++            <%= styled_form_with model: item,
++                                 url: binance_item_path(item),
++                                 scope: :binance_item,
++                                 method: :patch,
++                                 data: { turbo: true },
++                                 class: "space-y-3" do |form| %>
++              <%= form.text_field :name,
++                                  label: t("settings.providers.binance_panel.connection_name_label"),
++                                  placeholder: t("settings.providers.binance_panel.connection_name_placeholder") %>
++
++              <%= form.text_field :api_key,
++                                  label: t("settings.providers.binance_panel.api_key_label"),
++                                  placeholder: t("settings.providers.binance_panel.keep_api_key_placeholder"),
++                                  type: :password,
++                                  value: nil %>
++
++              <%= form.text_field :api_secret,
++                                  label: t("settings.providers.binance_panel.api_secret_label"),
++                                  placeholder: t("settings.providers.binance_panel.keep_api_secret_placeholder"),
++                                  type: :password,
++                                  value: nil %>
++
++              <div class="flex justify-end">
++                <%= form.submit t("settings.providers.binance_panel.update_connection") %>
++              </div>
+             <% end %>
+           </div>
+-        </div>
++        <% end %>
+       <% end %>
+     </div>
+-  <% else %>
+-    <%
+-      binance_item = Current.family.binance_items.build(name: "Binance")
+-    %>
+-
+-    <%= styled_form_with model: binance_item,
+-                         url: binance_items_path,
+-                         scope: :binance_item,
+-                         method: :post,
+-                         data: { turbo: true },
+-                         class: "space-y-3" do |form| %>
+-      <%= form.text_field :api_key,
+-                          label: t("settings.providers.binance_panel.api_key_label"),
+-                          placeholder: t("settings.providers.binance_panel.api_key_placeholder"),
+-                          type: :password %>
+-
+-      <%= form.text_field :api_secret,
+-                          label: t("settings.providers.binance_panel.api_secret_label"),
+-                          placeholder: t("settings.providers.binance_panel.api_secret_placeholder"),
+-                          type: :password %>
+-
+-      <div class="flex justify-end">
+-        <%= form.submit t("settings.providers.binance_panel.connect_button") %>
+-      </div>
+-    <% end %>
+   <% end %>
+ 
++  <% binance_item = Current.family.binance_items.build(name: t("settings.providers.binance_panel.default_connection_name")) %>
++  <% if items.any? %>
++    <h3 class="flex items-center gap-2 text-sm font-medium text-primary mt-4">
++      <%= icon "plus", size: "sm" %>
++      <%= t("settings.providers.binance_panel.add_connection") %>
++    </h3>
++  <% end %>
++
++  <%= styled_form_with model: binance_item,
++                       url: binance_items_path,
++                       scope: :binance_item,
++                       method: :post,
++                       data: { turbo: true },
++                       class: "space-y-3" do |form| %>
++    <%= form.text_field :name,
++                        label: t("settings.providers.binance_panel.connection_name_label"),
++                        placeholder: t("settings.providers.binance_panel.connection_name_placeholder") %>
++
++    <%= form.text_field :api_key,
++                        label: t("settings.providers.binance_panel.api_key_label"),
++                        placeholder: t("settings.providers.binance_panel.api_key_placeholder"),
++                        type: :password,
++                        value: nil %>
++
++    <%= form.text_field :api_secret,
++                        label: t("settings.providers.binance_panel.api_secret_label"),
++                        placeholder: t("settings.providers.binance_panel.api_secret_placeholder"),
++                        type: :password,
++                        value: nil %>
++
++    <div class="flex justify-end">
++      <%= form.submit t("settings.providers.binance_panel.add_connection") %>
++    </div>
++  <% end %>
+ </div>
 diff --git a/bin/regenerate-downstream-patch b/bin/regenerate-downstream-patch
 new file mode 100755
 index 00000000..c08f95fd
@@ -1841,7 +2277,7 @@ index 00000000..c08f95fd
 +  "$patch_file" "$upstream_commit" "$(git rev-parse HEAD)"
 diff --git a/bin/upgrade-upstream b/bin/upgrade-upstream
 new file mode 100755
-index 00000000..3604d0c2
+index 00000000..552167e3
 --- /dev/null
 +++ b/bin/upgrade-upstream
 @@ -0,0 +1,95 @@
@@ -1937,9 +2373,9 @@ index 00000000..3604d0c2
 +
 +printf '\nUpgrade branch is ready. Next steps:\n'
 +printf '  1. Run the focused and full test suites from docs/UPSTREAM.md.\n'
-+printf '  2. git push -u origin %s\n' "$branch_name"
-+printf '  3. gh pr create --repo petrushin-ai/sure --base main --head %s\n' "$branch_name"
-+printf '  4. Merge only after CI is green; publish and deploy by immutable digest.\n'
++printf '  2. git switch main && git merge --no-ff --no-edit %s\n' "$branch_name"
++printf '  3. bin/verify-downstream-patch && git push origin main\n'
++printf '  4. Publish and deploy only after direct-main CI is green.\n'
 diff --git a/bin/verify-downstream-patch b/bin/verify-downstream-patch
 new file mode 100755
 index 00000000..97d04be6
@@ -2071,8 +2507,49 @@ index 939e97c6..d060bc61 100644
              dimensions_mismatch: The embedding vector dimensions do not match the configured dimensions
              extension_not_enabled: The PostgreSQL vector extension is not enabled
              table_not_found: The vector_store_chunks table was not found
+diff --git a/config/locales/views/binance_items/en.yml b/config/locales/views/binance_items/en.yml
+index ae3bd298..c1e6e2ce 100644
+--- a/config/locales/views/binance_items/en.yml
++++ b/config/locales/views/binance_items/en.yml
+@@ -12,6 +12,8 @@ en:
+       title: Import Binance Account
+       subtitle: Select which portfolios to track
+       instructions: Select the Binance portfolios you want to import. Only portfolios with balances are shown.
++      account_name_label: Account name
++      account_name_help: This is the name Sure will use for the imported account. Later syncs will not overwrite it.
+       no_accounts: All accounts have been imported.
+       accounts_count:
+         one: "%{count} account available"
+@@ -55,6 +57,7 @@ en:
+       wait_for_sync: Wait for Binance to finish syncing
+       check_provider_health: Check that your Binance API credentials are valid
+       currently_linked_to: "Currently linked to: %{account_name}"
++      connection: "Connection: %{name}"
+       link: Link
+       cancel: Cancel
+     link_existing_account:
+diff --git a/config/locales/views/binance_items/ru.yml b/config/locales/views/binance_items/ru.yml
+index a10a6274..72a1c75e 100644
+--- a/config/locales/views/binance_items/ru.yml
++++ b/config/locales/views/binance_items/ru.yml
+@@ -63,12 +63,15 @@ ru:
+     select_existing_account:
+       cancel: Отмена
+       check_provider_health: Проверьте, действительны ли ваши API-данные Binance
++      connection: 'Подключение: %{name}'
+       currently_linked_to: 'В настоящее время связано с: %{account_name}'
+       link: Связать
+       no_accounts_found: Счета Binance не найдены.
+       title: Связать счёт Binance
+       wait_for_sync: Подождите, пока Binance завершит синхронизацию
+     setup_accounts:
++      account_name_label: Название счёта
++      account_name_help: Это название будет использоваться для импортированного счёта. Последующие синхронизации его не изменят.
+       accounts_count:
+         few: Доступно %{count} счёта
+         many: Доступно %{count} счетов
 diff --git a/config/locales/views/settings/en.yml b/config/locales/views/settings/en.yml
-index 941500da..711b038f 100644
+index 941500da..6115604d 100644
 --- a/config/locales/views/settings/en.yml
 +++ b/config/locales/views/settings/en.yml
 @@ -425,7 +425,7 @@ en:
@@ -2084,11 +2561,67 @@ index 941500da..711b038f 100644
          kraken: Sync Kraken balances and spot trade fills using a read-only API key.
          onchain_wallet: Track self-custody Bitcoin, EVM and Solana wallets from their public addresses.
          snaptrade: Connect brokerage accounts via the SnapTrade aggregation network.
+@@ -465,6 +465,11 @@ en:
+         sync: Sync
+         disconnect_confirm: Are you sure you want to disconnect this Coinbase connection? Your synced accounts will become manual accounts.
+       binance_panel:
++        default_connection_name: Binance
++        add_connection: Add Binance connection
++        update_connection: Update connection
++        connection_name_label: Connection name
++        connection_name_placeholder: Main Binance
+         setup_instructions: "To connect Binance, create a read-only API key:"
+         step1_html: 'Go to <a href="https://www.binance.com/en/my/settings/api-management" target="_blank" rel="noopener noreferrer" class="underline">Binance API Management</a>'
+         step2: "Create a new API key with Enable Reading permission only"
+@@ -476,15 +481,19 @@ en:
+         ip_hint_contact_admin: "Contact your administrator to obtain the app server's egress IP address."
+         api_key_label: API Key
+         api_key_placeholder: Paste your Binance API Key
++        keep_api_key_placeholder: Leave blank to keep the existing API key
+         api_secret_label: API Secret
+         api_secret_placeholder: Paste your Binance API Secret
++        keep_api_secret_placeholder: Leave blank to keep the existing API secret
+         connect_button: Connect Binance
++        setup_accounts: Setup account
+         syncing: Syncing...
+         sync: Sync
+         historical_import: "Historical Import Settings"
+         sync_start_date_label: "Import data from"
+         sync_start_date_help: "Select how far back to fetch historical trades."
+-        disconnect_confirm: "Are you sure you want to disconnect Binance?"
++        disconnect: Disconnect
++        disconnect_confirm: "Are you sure you want to disconnect %{name}?"
+       kraken_panel:
+         step1_html: 'Go to <a href="https://pro.kraken.com/app/settings/api" target="_blank" rel="noopener noreferrer" class="underline">Kraken API settings</a>'
+         step2: "Create an API key with Query Funds and Query Closed Orders & Trades only."
 diff --git a/config/locales/views/settings/ru.yml b/config/locales/views/settings/ru.yml
-index 2104c799..956bc770 100644
+index 2104c799..d9780869 100644
 --- a/config/locales/views/settings/ru.yml
 +++ b/config/locales/views/settings/ru.yml
-@@ -537,8 +537,8 @@ ru:
+@@ -275,12 +275,21 @@ ru:
+           поступали в Sure.
+         page_title: Синхронизация банка
+       binance_panel:
++        default_connection_name: Binance
++        add_connection: Добавить подключение Binance
++        update_connection: Обновить подключение
++        connection_name_label: Название подключения
++        connection_name_placeholder: Основной Binance
+         api_key_label: API Ключ
+         api_key_placeholder: Вставьте ваш API-ключ Binance
++        keep_api_key_placeholder: Оставьте пустым, чтобы сохранить текущий API-ключ
+         api_secret_label: Секретный ключ API
+         api_secret_placeholder: Вставьте ваш секретный ключ API Binance
++        keep_api_secret_placeholder: Оставьте пустым, чтобы сохранить текущий секретный ключ
+         connect_button: Подключить Binance
+-        disconnect_confirm: Вы уверены, что хотите отключить Binance?
++        setup_accounts: Настроить счёт
++        disconnect: Отключить
++        disconnect_confirm: Вы уверены, что хотите отключить %{name}?
+         historical_import: Настройки исторического импорта
+         ip_hint_body: 'Добавьте IP-адрес выхода сервера приложения в белый список
+           API-ключа Binance:'
+@@ -537,8 +546,8 @@ ru:
        sync_provider_no_items: Нет доступных подключений для синхронизации.
        taglines:
          akahu: Синхронизация финансовых учреждений Новой Зеландии через Akahu.
@@ -2116,12 +2649,48 @@ index 11b61745..a7fdffc7 100644
  sync_property_valuations:
    cron: "30 1 1 * *" # monthly on the 1st at 1:30 AM
    class: "SyncPropertyValuationsJob"
+diff --git a/db/migrate/20260829090000_add_unique_active_binance_api_keys.rb b/db/migrate/20260829090000_add_unique_active_binance_api_keys.rb
+new file mode 100644
+index 00000000..e7526f8d
+--- /dev/null
++++ b/db/migrate/20260829090000_add_unique_active_binance_api_keys.rb
+@@ -0,0 +1,9 @@
++class AddUniqueActiveBinanceApiKeys < ActiveRecord::Migration[7.2]
++  def change
++    add_index :binance_items,
++              [ :family_id, :api_key ],
++              unique: true,
++              where: "scheduled_for_deletion = false",
++              name: "idx_binance_items_unique_active_api_key_by_family"
++  end
++end
+diff --git a/db/schema.rb b/db/schema.rb
+index 40f62952..62b36544 100644
+--- a/db/schema.rb
++++ b/db/schema.rb
+@@ -10,7 +10,7 @@
+ #
+ # It's strongly recommended that you check this file into your version control system.
+ 
+-ActiveRecord::Schema[8.1].define(version: 2026_08_26_090000) do
++ActiveRecord::Schema[8.1].define(version: 2026_08_29_090000) do
+   # These are extensions that must be enabled in order to support this database
+   enable_extension "pg_catalog.plpgsql"
+   enable_extension "pgcrypto"
+@@ -313,6 +313,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_26_090000) do
+     t.string "status", default: "good", null: false
+     t.datetime "sync_start_date"
+     t.datetime "updated_at", null: false
++    t.index ["family_id", "api_key"], name: "idx_binance_items_unique_active_api_key_by_family", unique: true, where: "(scheduled_for_deletion = false)"
+     t.index ["family_id"], name: "index_binance_items_on_family_id"
+     t.index ["status"], name: "index_binance_items_on_status"
+   end
 diff --git a/docs/UPSTREAM.md b/docs/UPSTREAM.md
 new file mode 100644
-index 00000000..27731d07
+index 00000000..df824676
 --- /dev/null
 +++ b/docs/UPSTREAM.md
-@@ -0,0 +1,241 @@
+@@ -0,0 +1,267 @@
 +# Maintaining the Petrushin AI Sure fork
 +
 +This repository is a native GitHub fork of [`we-promise/sure`](https://github.com/we-promise/sure).
@@ -2134,9 +2703,11 @@ index 00000000..27731d07
 +  the multi-architecture image build.
 +- `we-digital/devops` owns the pinned production image digest, backups,
 +  rollout, health verification, and rollback.
-+- Never deploy a mutable branch or tag. Merge a reviewed fork PR, wait for the
-+  publish workflow, inspect the OCI revision, and pin the resulting index
-+  digest in `deployments/sure-teknologia/compose.yml`.
++- Never deploy a mutable branch or tag. Approved Teknologia changes are
++  committed directly to `petrushin-ai/sure:main` without a PR. Every code
++  commit must include this ledger and a regenerated, verified downstream
++  patch. Wait for the publish workflow, inspect the OCI revision, and pin the
++  resulting index digest in `deployments/sure-teknologia/compose.yml`.
 +
 +## Source-of-truth artifacts
 +
@@ -2152,8 +2723,8 @@ index 00000000..27731d07
 +  applies the patch with Git's three-way merge support, advances the marker,
 +  and regenerates the patch.
 +
-+CI runs `bin/verify-downstream-patch` on every fork PR and before every image
-+publish. A stale or non-applicable patch is a hard failure.
++CI runs `bin/verify-downstream-patch` on every fork change and before every
++image publish. A stale or non-applicable patch is a hard failure.
 +
 +## Active downstream patch ledger
 +
@@ -2219,8 +2790,8 @@ index 00000000..27731d07
 +### SURE-006 — Complete native Binance balance synchronization
 +
 +- Source: [`petrushin-ai/sure#6`](https://github.com/petrushin-ai/sure/pull/6)
-+  and [`docs/hosting/binance.md`](hosting/binance.md); record the merge commit
-+  here after merge.
++  and [`docs/hosting/binance.md`](hosting/binance.md), merge commit
++  `04c72b983d94a63c0eb1419c6d7c0f4b56e33474`.
 +- Purpose: synchronize Spot, Funding, Cross/Isolated Margin, Simple Earn,
 +  BFUSD/RWUSD, USDⓈ-M/COIN-M Futures, Options and Portfolio Margin directly
 +  from Binance; exclude current positions worth less than `$1`; retain
@@ -2233,6 +2804,23 @@ index 00000000..27731d07
 +  coverage, Portfolio Margin de-duplication, pagination, `$1` cutoff semantics,
 +  partial-source retention/diagnostics, and native scheduled synchronization.
 +
++### SURE-007 — Multiple named Binance connections
++
++- Source: direct `main` change authorized for the Teknologia fork and
++  [`docs/hosting/binance.md`](hosting/binance.md).
++- Purpose: allow one family to connect multiple Binance API key pairs, name
++  each connection and imported Sure account independently, preserve existing
++  credentials during name-only edits, reject a duplicate active key within a
++  family, keep every import scoped to its owning connection, and stagger
++  scheduled connection syncs to reduce Binance rate-limit bursts.
++- Main conflict areas: `app/models/binance_item.rb`,
++  `app/models/binance_item/importer.rb`, `app/controllers/binance_items_controller.rb`,
++  Binance settings/setup views and locales, and the scheduled Binance jobs.
++- Retirement rule: remove only after upstream supports multiple independently
++  named Binance credentials per family with connection-scoped imports,
++  non-destructive credential edits, duplicate-key protection, stable account
++  names and bounded scheduled fan-out.
++
 +If upstream absorbs a patch, record the upstream PR and commit here, compare
 +behavior and tests, remove only the duplicated downstream implementation, and
 +regenerate the patch. Do not silently delete a ledger entry.
@@ -2240,14 +2828,19 @@ index 00000000..27731d07
 +## Ordinary downstream changes
 +
 +Every downstream code change must update this ledger when its behavior or
-+retirement condition differs from the existing entries. After committing the
-+source change:
++retirement condition differs from the existing entries. The source, ledger and
++generated patch belong in one final direct-main commit. Create the local commit
++from the source and ledger first so the generator can diff `HEAD`, then amend
++the generated patch into that same commit before pushing:
 +
 +```bash
++git add <source-and-test-files> docs/UPSTREAM.md
++git commit -m "Describe the downstream change"
 +bin/regenerate-downstream-patch
-+git add petrushin-ai-custom.patch docs/UPSTREAM.md
++git add petrushin-ai-custom.patch
 +git commit --amend --no-edit
 +bin/verify-downstream-patch
++git push origin main
 +```
 +
 +The patch must remain a deterministic representation of the complete fork
@@ -2334,21 +2927,23 @@ index 00000000..27731d07
 +with no customer data and must confirm exact metadata plus exact transaction
 +values; successful HTTP status alone is insufficient.
 +
-+### 4. PR, build, and deploy
++### 4. Direct-main build and deploy
 +
-+Always specify the fork explicitly so a PR cannot be opened against upstream:
++Keep the verified rebase result and regenerated patch in the same commit, then
++push the fork explicitly. Do not open a PR for Teknologia fork changes:
 +
 +```bash
-+git push -u origin chore/upstream-<target-sha>
-+gh pr create --repo petrushin-ai/sure --base main \
-+  --head chore/upstream-<target-sha>
++git switch main
++git merge --no-ff --no-edit chore/upstream-<target-sha>
++bin/verify-downstream-patch
++git push origin main
 +```
 +
-+After merge:
++After push:
 +
 +1. wait for `Publish Docker image` to finish successfully;
 +2. verify the OCI index contains amd64 and arm64 and that
-+   `org.opencontainers.image.revision` equals the fork merge commit;
++   `org.opencontainers.image.revision` equals the pushed fork commit;
 +3. update only the immutable digest in
 +   `we-digital/devops/deployments/sure-teknologia/compose.yml`;
 +4. follow `we-digital/devops/docs/runbooks/sure-teknologia.md` for backup,
@@ -2356,7 +2951,7 @@ index 00000000..27731d07
 +
 +## Rollback
 +
-+- Before merge, return to the local safety tag printed by
++- Before pushing `main`, return to the local safety tag printed by
 +  `bin/upgrade-upstream`; never force-push `main`.
 +- After deployment, restore the previous image digest through
 +  `we-digital/devops` and rerun its deployment procedure.
@@ -2365,14 +2960,32 @@ index 00000000..27731d07
 +  sufficient.
 diff --git a/docs/hosting/binance.md b/docs/hosting/binance.md
 new file mode 100644
-index 00000000..fb7a7cd2
+index 00000000..9eaf5ebb
 --- /dev/null
 +++ b/docs/hosting/binance.md
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,94 @@
 +# Binance
 +
 +Sure connects directly to Binance with a read-only API key. No third-party
 +aggregator or workflow service is involved.
++
++## Multiple connections and account names
++
++A family can add multiple Binance connections. Each connection has its own
++encrypted API key pair and sync lifecycle, so personal, business and Binance
++sub-accounts can be imported independently. Use a different Binance API key
++for each connection; Sure rejects a duplicate active key within the same
++family.
++
++The connection name identifies the credential in provider settings. During
++account setup, the imported Sure account name can be edited independently.
++Later syncs update balances, holdings and transactions but never overwrite the
++chosen account name. Renaming a connection also leaves an already imported
++account name unchanged.
++
++Each key produces one combined Sure account containing all supported Binance
++balance sources listed below. This avoids double counting between source types
++while keeping different API keys in separate Sure accounts.
 +
 +## Balance coverage
 +
@@ -2413,9 +3026,12 @@ index 00000000..fb7a7cd2
 +## Schedule
 +
 +The native Sidekiq scheduler enqueues every active Binance connection every
-+four hours, at minute 17. Manual **Sync now** remains available. The scheduled
-+job uses the same sync pipeline, idempotency rules and debug logging as a manual
-+sync.
++four hours, at minute 17. Connections are staggered by 30 seconds, capped at a
++10-minute fan-out window, to avoid an API burst when several keys are present.
++Manual **Sync now** remains available. The scheduled job uses the same sync
++pipeline, connection-scoped idempotency rules and debug logging as a manual
++sync. A failure for one key does not prevent the remaining connections from
++being scheduled.
 +
 +## API-key permissions
 +
@@ -2497,38 +3113,155 @@ index 5af9070d..f1b5e0a9 100644
  
      with_ai_environment(
        "OPENAI_ACCESS_TOKEN" => "sk-secret-openai",
+diff --git a/test/controllers/binance_items_controller_test.rb b/test/controllers/binance_items_controller_test.rb
+index 45170542..37c18a0f 100644
+--- a/test/controllers/binance_items_controller_test.rb
++++ b/test/controllers/binance_items_controller_test.rb
+@@ -29,6 +29,45 @@ class BinanceItemsControllerTest < ActionDispatch::IntegrationTest
+     assert_response :redirect
+   end
+ 
++  test "creates a second named Binance connection" do
++    assert_difference "@family.binance_items.count", 1 do
++      post binance_items_url, params: {
++        binance_item: {
++          name: "Business Binance",
++          api_key: "business_key",
++          api_secret: "business_secret"
++        }
++      }
++    end
++
++    assert_redirected_to settings_providers_path
++    assert_equal "Business Binance", @family.binance_items.order(:created_at).last.name
++  end
++
++  test "updates a connection name without clearing blank credentials" do
++    patch binance_item_url(@binance_item), params: {
++      binance_item: {
++        name: "Long-term Binance",
++        api_key: "",
++        api_secret: ""
++      }
++    }
++
++    assert_redirected_to settings_providers_path
++    @binance_item.reload
++    assert_equal "Long-term Binance", @binance_item.name
++    assert_equal "test_key", @binance_item.api_key
++    assert_equal "test_secret", @binance_item.api_secret
++  end
++
++  test "provider panel keeps the add connection form after a connection exists" do
++    get connect_form_settings_providers_url(provider_key: "binance")
++
++    assert_response :success
++    assert_select "#binance-providers-panel form[action='#{binance_items_path}']"
++    assert_select "#binance-providers-panel input[name='binance_item[name]']"
++  end
++
+   test "should show setup_accounts page" do
+     get setup_accounts_binance_item_url(@binance_item)
+     assert_response :success
+@@ -55,6 +94,24 @@ class BinanceItemsControllerTest < ActionDispatch::IntegrationTest
+     assert_equal "Crypto", binance_account.current_account.accountable_type
+   end
+ 
++  test "complete_account_setup uses the requested account name" do
++    binance_account = @binance_item.binance_accounts.create!(
++      name: "Test Binance",
++      account_type: "combined",
++      currency: "USD",
++      current_balance: 1000.0
++    )
++
++    post complete_account_setup_binance_item_url(@binance_item), params: {
++      selected_accounts: [ binance_account.id ],
++      account_names: { binance_account.id.to_s => "Family savings" }
++    }
++
++    assert_response :redirect
++    assert_equal "Family savings", binance_account.reload.name
++    assert_equal "Family savings", binance_account.current_account.name
++  end
++
+   test "complete_account_setup updates sync_start_date when provided with a valid past date" do
+     binance_account = @binance_item.binance_accounts.create!(
+       name: "Spot Portfolio",
+diff --git a/test/jobs/sync_binance_connection_job_test.rb b/test/jobs/sync_binance_connection_job_test.rb
+new file mode 100644
+index 00000000..ca89270d
+--- /dev/null
++++ b/test/jobs/sync_binance_connection_job_test.rb
+@@ -0,0 +1,31 @@
++require "test_helper"
++
++class SyncBinanceConnectionJobTest < ActiveJob::TestCase
++  test "starts one active connection sync" do
++    item = binance_items(:one)
++    relation = stub(find_by: item)
++    BinanceItem.stubs(:active).returns(relation)
++    item.expects(:syncing?).returns(false)
++    item.expects(:sync_later).once
++
++    assert_nil SyncBinanceConnectionJob.perform_now(item.id)
++  end
++
++  test "ignores a connection that is no longer active" do
++    item = binance_items(:one)
++    relation = stub(find_by: nil)
++    BinanceItem.stubs(:active).returns(relation)
++
++    assert_nil SyncBinanceConnectionJob.perform_now(item.id)
++  end
++
++  test "does not start a duplicate sync" do
++    item = binance_items(:one)
++    relation = stub(find_by: item)
++    BinanceItem.stubs(:active).returns(relation)
++    item.expects(:syncing?).returns(true)
++    item.expects(:sync_later).never
++
++    SyncBinanceConnectionJob.perform_now(item.id)
++  end
++end
 diff --git a/test/jobs/sync_binance_job_test.rb b/test/jobs/sync_binance_job_test.rb
 new file mode 100644
-index 00000000..0ed362e2
+index 00000000..7ed463b4
 --- /dev/null
 +++ b/test/jobs/sync_binance_job_test.rb
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,41 @@
 +require "test_helper"
 +
 +class SyncBinanceJobTest < ActiveJob::TestCase
-+  test "syncs every active Binance connection" do
-+    first = mock("first_binance_item")
-+    second = mock("second_binance_item")
-+    first.expects(:sync_later).once
-+    second.expects(:sync_later).once
++  test "schedules every active Binance connection with bounded staggering" do
++    active_items = BinanceItem.active.order(:id).to_a
 +
-+    relation = mock("active_binance_items")
-+    relation.stubs(:find_each).multiple_yields([ first ], [ second ])
-+    BinanceItem.expects(:active).returns(relation)
++    assert_enqueued_jobs active_items.size, only: SyncBinanceConnectionJob do
++      SyncBinanceJob.perform_now
++    end
 +
-+    SyncBinanceJob.perform_now
++    jobs = enqueued_jobs.select { |job| job[:job] == SyncBinanceConnectionJob }
++    assert_equal active_items.map(&:id).sort, jobs.map { |job| job[:args].first }.sort
++    assert jobs.all? { |job| job[:at].present? }
++    assert_operator jobs.map { |job| job[:at] }.max - jobs.map { |job| job[:at] }.min,
++                    :<=,
++                    SyncBinanceJob::MAX_STAGGER.to_f + 1
 +  end
 +
 +  test "records an enqueue failure and continues" do
 +    family = families(:dylan_family)
 +    failing = stub(id: "failed-id", family: family)
-+    failing.stubs(:sync_later).raises(StandardError, "queue unavailable")
-+    success = mock("successful_binance_item")
-+    success.expects(:sync_later).once
++    success = stub(id: "successful-id", family: family)
 +
 +    relation = mock("active_binance_items")
-+    relation.stubs(:find_each).multiple_yields([ failing ], [ success ])
++    relation.stubs(:find_each).returns([ failing, success ].each)
 +    BinanceItem.expects(:active).returns(relation)
++
++    scheduled = mock("scheduled_binance_job")
++    SyncBinanceConnectionJob.stubs(:set).returns(scheduled)
++    scheduled.expects(:perform_later).with("failed-id").raises(StandardError, "queue unavailable")
++    scheduled.expects(:perform_later).with("successful-id").returns(true)
 +
 +    assert_difference "DebugLogEntry.count", 1 do
 +      SyncBinanceJob.perform_now
@@ -2764,7 +3497,7 @@ index 00000000..bb3150c5
 +  end
 +end
 diff --git a/test/models/binance_item/importer_test.rb b/test/models/binance_item/importer_test.rb
-index 88c0b47f..61e2a8a2 100644
+index 88c0b47f..45c8f485 100644
 --- a/test/models/binance_item/importer_test.rb
 +++ b/test/models/binance_item/importer_test.rb
 @@ -10,9 +10,15 @@ class BinanceItem::ImporterTest < ActiveSupport::TestCase
@@ -2783,7 +3516,24 @@ index 88c0b47f..61e2a8a2 100644
    end
  
    test "creates a binance_account of type combined" do
-@@ -45,11 +51,79 @@ class BinanceItem::ImporterTest < ActiveSupport::TestCase
+@@ -23,6 +29,16 @@ class BinanceItem::ImporterTest < ActiveSupport::TestCase
+     ba = @item.binance_accounts.first
+     assert_equal "combined", ba.account_type
+     assert_equal "USD", ba.currency
++    assert_equal @item.name, ba.name
++  end
++
++  test "later syncs do not overwrite a custom imported account name" do
++    BinanceItem::Importer.new(@item, binance_provider: @provider).import
++    @item.binance_accounts.first.update!(name: "Family savings")
++
++    BinanceItem::Importer.new(@item, binance_provider: @provider).import
++
++    assert_equal "Family savings", @item.binance_accounts.first.reload.name
+   end
+ 
+   test "calculates combined USD balance" do
+@@ -45,11 +61,79 @@ class BinanceItem::ImporterTest < ActiveSupport::TestCase
      assert_in_delta 1000.0, ba.current_balance.to_f, 0.01
    end
  
@@ -2863,7 +3613,7 @@ index 88c0b47f..61e2a8a2 100644
  
      assert_no_difference "@item.binance_accounts.count" do
        BinanceItem::Importer.new(@item, binance_provider: @provider).import
-@@ -63,9 +137,14 @@ class BinanceItem::ImporterTest < ActiveSupport::TestCase
+@@ -63,9 +147,14 @@ class BinanceItem::ImporterTest < ActiveSupport::TestCase
    # asset already sold came back on every sync.
    test "a total outage is not an empty wallet" do
      stub_failed_result("spot")
@@ -2878,7 +3628,7 @@ index 88c0b47f..61e2a8a2 100644
  
      assert_raises BinanceItem::Importer::AllRequestsFailed do
        BinanceItem::Importer.new(@item, binance_provider: @provider).import
-@@ -153,9 +232,16 @@ class BinanceItem::ImporterTest < ActiveSupport::TestCase
+@@ -153,9 +242,16 @@ class BinanceItem::ImporterTest < ActiveSupport::TestCase
  
      ba = @item.binance_accounts.first
      assert ba.raw_payload.key?("spot")
@@ -2895,7 +3645,7 @@ index 88c0b47f..61e2a8a2 100644
    end
  
    private
-@@ -169,8 +255,17 @@ class BinanceItem::ImporterTest < ActiveSupport::TestCase
+@@ -169,8 +265,17 @@ class BinanceItem::ImporterTest < ActiveSupport::TestCase
      end
  
      def stub_failed_result(source)
@@ -2915,7 +3665,7 @@ index 88c0b47f..61e2a8a2 100644
        klass.any_instance.stubs(:import).returns(
          { assets: [], raw: nil, source: source, error: "boom" }
        )
-@@ -188,15 +283,51 @@ class BinanceItem::ImporterTest < ActiveSupport::TestCase
+@@ -188,15 +293,51 @@ class BinanceItem::ImporterTest < ActiveSupport::TestCase
        )
      end
  
@@ -3133,6 +3883,78 @@ index 00000000..69b8e60c
 +    assert_equal [ "RWUSD" ], result[:assets].map { |asset| asset[:symbol] }
 +  end
 +end
+diff --git a/test/models/binance_item_test.rb b/test/models/binance_item_test.rb
+index c9a03bf3..7cde1d6d 100644
+--- a/test/models/binance_item_test.rb
++++ b/test/models/binance_item_test.rb
+@@ -39,6 +39,54 @@ class BinanceItemTest < ActiveSupport::TestCase
+     assert_includes item.errors[:api_secret], "can't be blank"
+   end
+ 
++  test "allows multiple connections with different keys in one family" do
++    other = BinanceItem.new(
++      family: @family,
++      name: "Trading Binance",
++      api_key: "another_key",
++      api_secret: "another_secret"
++    )
++
++    assert other.valid?
++  end
++
++  test "rejects a duplicate active API key in one family" do
++    duplicate = BinanceItem.new(
++      family: @family,
++      name: "Duplicate Binance",
++      api_key: @item.api_key,
++      api_secret: "another_secret"
++    )
++
++    refute duplicate.valid?
++    assert_includes duplicate.errors[:api_key], "has already been taken"
++  end
++
++  test "allows reusing a key after the old connection is scheduled for deletion" do
++    @item.update!(scheduled_for_deletion: true)
++    replacement = BinanceItem.new(
++      family: @family,
++      name: "Replacement Binance",
++      api_key: @item.api_key,
++      api_secret: "replacement_secret"
++    )
++
++    assert replacement.valid?
++  end
++
++  test "strips connection names and credentials" do
++    item = BinanceItem.create!(
++      family: @family,
++      name: "  Savings Binance  ",
++      api_key: "  stripped_key  ",
++      api_secret: "  stripped_secret  "
++    )
++
++    assert_equal "Savings Binance", item.name
++    assert_equal "stripped_key", item.api_key
++    assert_equal "stripped_secret", item.api_secret
++  end
++
+   test "active scope excludes scheduled for deletion" do
+     @item.update!(scheduled_for_deletion: true)
+     refute_includes BinanceItem.active.to_a, @item
+@@ -66,6 +114,12 @@ class BinanceItemTest < ActiveSupport::TestCase
+     assert_equal "#F0B90B", @item.institution_color
+   end
+ 
++  test "institution_display_name prefers the connection name" do
++    @item.set_binance_institution_defaults!
++
++    assert_equal "My Binance", @item.institution_display_name
++  end
++
+   test "sync_status_summary with no accounts" do
+     assert_equal I18n.t("binance_items.binance_item.sync_status.no_accounts"), @item.sync_status_summary
+   end
 diff --git a/test/models/provider/anthropic/bank_statement_extractor_test.rb b/test/models/provider/anthropic/bank_statement_extractor_test.rb
 index 20324622..b2edbc25 100644
 --- a/test/models/provider/anthropic/bank_statement_extractor_test.rb
