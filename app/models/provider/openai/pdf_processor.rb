@@ -187,9 +187,9 @@ class Provider::Openai::PdfProcessor
         messages: [
           { role: "system", content: instructions + "\n\nIMPORTANT: Respond with valid JSON only, no markdown or other formatting." },
           { role: "user", content: content }
-        ],
-        max_tokens: max_response_tokens
+        ]
       }
+      params[custom_provider ? :max_tokens : :max_completion_tokens] = max_response_tokens
 
       response = client.chat(parameters: params)
 
