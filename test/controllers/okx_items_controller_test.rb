@@ -37,4 +37,20 @@ class OkxItemsControllerTest < ActionDispatch::IntegrationTest
     end
     assert_redirected_to settings_providers_path
   end
+
+  test "setup accounts uses theme-aware design system inputs" do
+    okx_account = @item.okx_accounts.create!(
+      name: "OKX Portfolio",
+      account_type: "combined",
+      currency: "USD",
+      current_balance: 100
+    )
+
+    get setup_accounts_okx_item_url(@item)
+
+    assert_response :success
+    assert_select "input[type='date'].form-field__input[name='sync_start_date']", count: 1
+    assert_select "input.form-field__input[name='account_names[#{okx_account.id}]']", count: 1
+    assert_select "input.input", count: 0
+  end
 end

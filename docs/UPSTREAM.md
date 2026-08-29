@@ -163,7 +163,7 @@ image publish. A stale or non-applicable patch is a hard failure.
 
 - Source: direct owner request in `#devops`, 2026-08-29.
 - Status: active downstream product integration.
-- Files: `app/models/provider/okx.rb`, `app/models/okx_item*`,
+- Files: `app/models/provider/okx.rb`, `app/models/provider/okx_adapter.rb`, `app/models/okx_item*`,
   `app/models/okx_account*`, `app/controllers/okx_items_controller.rb`,
   `app/jobs/sync_okx*`, provider settings UI/locales, database migration, tests,
   and [`docs/hosting/okx.md`](hosting/okx.md).
@@ -182,6 +182,15 @@ image publish. A stale or non-applicable patch is a hard failure.
   comprehensive product coverage, aggregate-aware no-double-count semantics,
   exact crypto identity, `$1` boundary behavior, partial-source carryover,
   history retention diagnostics and isolated scheduled sync.
+- Account integration requirement: keep `OkxAccount` registered with
+  `Provider::Factory` through `Provider::OkxAdapter`. Account pages and
+  post-sync processing resolve every linked provider through this factory, so
+  the OKX account model alone is insufficient and causes request-level render
+  failures after a successful import.
+- UI requirement: OKX account-setup date and account-name controls must use the
+  Sure `StyledFormBuilder`/`form-field__input` design system so native date
+  controls and modal inputs inherit dark-theme background, text and calendar
+  indicator styling.
 
 If upstream absorbs a patch, record the upstream PR and commit here, compare
 behavior and tests, remove only the duplicated downstream implementation, and

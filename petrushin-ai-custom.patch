@@ -3038,6 +3038,65 @@ index 00000000..daac920a
 +      rows.index_by { |row| row[key].presence || row.to_json }.values
 +    end
 +end
+diff --git a/app/models/provider/okx_adapter.rb b/app/models/provider/okx_adapter.rb
+new file mode 100644
+index 00000000..2e41ff3c
+--- /dev/null
++++ b/app/models/provider/okx_adapter.rb
+@@ -0,0 +1,53 @@
++# frozen_string_literal: true
++
++class Provider::OkxAdapter < Provider::Base
++  include Provider::Syncable
++  include Provider::InstitutionMetadata
++
++  Provider::Factory.register("OkxAccount", self)
++
++  def self.supported_account_types
++    %w[Crypto]
++  end
++
++  def provider_name
++    "okx"
++  end
++
++  def sync_path
++    return unless item
++
++    Rails.application.routes.url_helpers.sync_okx_item_path(item)
++  end
++
++  def item
++    provider_account.okx_item
++  end
++
++  def can_delete_holdings?
++    false
++  end
++
++  def institution_domain
++    institution_metadata_value("domain")
++  end
++
++  def institution_name
++    institution_metadata_value("name")
++  end
++
++  def institution_url
++    institution_metadata_value("url")
++  end
++
++  def institution_color
++    institution_metadata_value("color")
++  end
++
++  private
++
++    def institution_metadata_value(key)
++      metadata = provider_account.institution_metadata || {}
++      metadata[key] || item&.public_send("institution_#{key}")
++    end
++end
 diff --git a/app/models/provider/openai.rb b/app/models/provider/openai.rb
 index 1c6f5d86..ed0ca46c 100644
 --- a/app/models/provider/openai.rb
@@ -3404,7 +3463,7 @@ index 323f2fb7..11a725cf 100644
            </div>
 diff --git a/app/views/okx_items/setup_accounts.html.erb b/app/views/okx_items/setup_accounts.html.erb
 new file mode 100644
-index 00000000..9bade624
+index 00000000..6317f8c1
 --- /dev/null
 +++ b/app/views/okx_items/setup_accounts.html.erb
 @@ -0,0 +1,27 @@
@@ -3412,12 +3471,12 @@ index 00000000..9bade624
 +<%= render DS::Dialog.new do |dialog| %>
 +  <% dialog.with_header(title: t(".title")) %>
 +  <% dialog.with_body do %>
-+    <%= form_with url: complete_account_setup_okx_item_path(@okx_item), method: :post, local: true, class: "space-y-6", data: { turbo_frame: "_top" } do |form| %>
++    <%= styled_form_with url: complete_account_setup_okx_item_path(@okx_item), method: :post, local: true, class: "space-y-6", data: { turbo_frame: "_top" } do |form| %>
 +      <div class="bg-surface border border-primary p-4 rounded-lg text-sm text-primary"><%= t(".instructions") %></div>
-+      <div class="field">
-+        <%= form.label :sync_start_date, t("settings.providers.okx_panel.sync_start_date_label"), class: "label" %>
-+        <%= form.date_field :sync_start_date, value: @okx_item.sync_start_date || (Date.current - 90.days), max: Date.current, class: "input" %>
-+      </div>
++      <%= form.date_field :sync_start_date,
++                          label: t("settings.providers.okx_panel.sync_start_date_label"),
++                          value: @okx_item.sync_start_date || (Date.current - 90.days),
++                          max: Date.current %>
 +      <% @okx_accounts.each do |okx_account| %>
 +        <div class="space-y-3 p-3 border border-primary rounded-lg">
 +          <label class="flex items-center gap-3 cursor-pointer">
@@ -3425,7 +3484,7 @@ index 00000000..9bade624
 +            <span class="flex-1 text-primary"><%= okx_account.name %></span>
 +            <span class="text-secondary"><%= number_with_delimiter(okx_account.current_balance || 0) %> <%= okx_account.currency %></span>
 +          </label>
-+          <%= text_field_tag "account_names[#{okx_account.id}]", okx_account.name, class: "input", autocomplete: "off", aria: { label: t(".account_name_label") } %>
++          <%= text_field_tag "account_names[#{okx_account.id}]", okx_account.name, class: "form-field__input", autocomplete: "off", aria: { label: t(".account_name_label") } %>
 +        </div>
 +      <% end %>
 +      <div class="flex gap-3">
@@ -4462,10 +4521,10 @@ index 40f62952..5c76ea91 100644
    add_foreign_key "plaid_accounts", "plaid_items"
 diff --git a/docs/UPSTREAM.md b/docs/UPSTREAM.md
 new file mode 100644
-index 00000000..427eba0c
+index 00000000..9422c2e1
 --- /dev/null
 +++ b/docs/UPSTREAM.md
-@@ -0,0 +1,328 @@
+@@ -0,0 +1,337 @@
 +# Maintaining the Petrushin AI Sure fork
 +
 +This repository is a native GitHub fork of [`we-promise/sure`](https://github.com/we-promise/sure).
@@ -4631,7 +4690,7 @@ index 00000000..427eba0c
 +
 +- Source: direct owner request in `#devops`, 2026-08-29.
 +- Status: active downstream product integration.
-+- Files: `app/models/provider/okx.rb`, `app/models/okx_item*`,
++- Files: `app/models/provider/okx.rb`, `app/models/provider/okx_adapter.rb`, `app/models/okx_item*`,
 +  `app/models/okx_account*`, `app/controllers/okx_items_controller.rb`,
 +  `app/jobs/sync_okx*`, provider settings UI/locales, database migration, tests,
 +  and [`docs/hosting/okx.md`](hosting/okx.md).
@@ -4650,6 +4709,15 @@ index 00000000..427eba0c
 +  comprehensive product coverage, aggregate-aware no-double-count semantics,
 +  exact crypto identity, `$1` boundary behavior, partial-source carryover,
 +  history retention diagnostics and isolated scheduled sync.
++- Account integration requirement: keep `OkxAccount` registered with
++  `Provider::Factory` through `Provider::OkxAdapter`. Account pages and
++  post-sync processing resolve every linked provider through this factory, so
++  the OKX account model alone is insufficient and causes request-level render
++  failures after a successful import.
++- UI requirement: OKX account-setup date and account-name controls must use the
++  Sure `StyledFormBuilder`/`form-field__input` design system so native date
++  controls and modal inputs inherit dark-theme background, text and calendar
++  indicator styling.
 +
 +If upstream absorbs a patch, record the upstream PR and commit here, compare
 +behavior and tests, remove only the duplicated downstream implementation, and
@@ -5186,10 +5254,10 @@ index 45170542..d5f9e54a 100644
        name: "Spot Portfolio",
 diff --git a/test/controllers/okx_items_controller_test.rb b/test/controllers/okx_items_controller_test.rb
 new file mode 100644
-index 00000000..b1552ece
+index 00000000..accc8057
 --- /dev/null
 +++ b/test/controllers/okx_items_controller_test.rb
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,56 @@
 +require "test_helper"
 +
 +class OkxItemsControllerTest < ActionDispatch::IntegrationTest
@@ -5228,6 +5296,22 @@ index 00000000..b1552ece
 +      post okx_items_url, params: { okx_item: { name: "OKX B", api_key: "key-b", api_secret: "secret-b", passphrase: "phrase-b" } }
 +    end
 +    assert_redirected_to settings_providers_path
++  end
++
++  test "setup accounts uses theme-aware design system inputs" do
++    okx_account = @item.okx_accounts.create!(
++      name: "OKX Portfolio",
++      account_type: "combined",
++      currency: "USD",
++      current_balance: 100
++    )
++
++    get setup_accounts_okx_item_url(@item)
++
++    assert_response :success
++    assert_select "input[type='date'].form-field__input[name='sync_start_date']", count: 1
++    assert_select "input.form-field__input[name='account_names[#{okx_account.id}]']", count: 1
++    assert_select "input.input", count: 0
 +  end
 +end
 diff --git a/test/jobs/sync_binance_connection_job_test.rb b/test/jobs/sync_binance_connection_job_test.rb
@@ -6598,6 +6682,77 @@ index 00000000..da583058
 +        "category" => nil
 +      }
 +    end
++end
+diff --git a/test/models/provider/okx_adapter_test.rb b/test/models/provider/okx_adapter_test.rb
+new file mode 100644
+index 00000000..41143ebb
+--- /dev/null
++++ b/test/models/provider/okx_adapter_test.rb
+@@ -0,0 +1,65 @@
++# frozen_string_literal: true
++
++require "test_helper"
++
++class Provider::OkxAdapterTest < ActiveSupport::TestCase
++  setup do
++    @item = OkxItem.create!(
++      family: families(:dylan_family),
++      name: "OKX A",
++      api_key: "okx_adapter_key",
++      api_secret: "okx_adapter_secret",
++      passphrase: "okx_adapter_passphrase",
++      institution_name: "OKX",
++      institution_domain: "okx.com",
++      institution_url: "https://www.okx.com",
++      institution_color: "#000000"
++    )
++    @provider_account = @item.okx_accounts.create!(
++      name: "OKX A",
++      account_type: "combined",
++      currency: "USD",
++      current_balance: 100
++    )
++  end
++
++  test "registers OkxAccount with the provider factory" do
++    adapter = Provider::Factory.create_adapter(@provider_account)
++
++    assert_instance_of Provider::OkxAdapter, adapter
++    assert_equal "okx", adapter.provider_name
++    assert_equal @item, adapter.item
++  end
++
++  test "supports crypto accounts and exposes the item sync path" do
++    adapter = Provider::OkxAdapter.new(@provider_account)
++
++    assert_equal [ "Crypto" ], Provider::OkxAdapter.supported_account_types
++    assert_equal Rails.application.routes.url_helpers.sync_okx_item_path(@item), adapter.sync_path
++    assert_not adapter.can_delete_holdings?
++  end
++
++  test "falls back to item institution metadata" do
++    adapter = Provider::OkxAdapter.new(@provider_account)
++
++    assert_equal "OKX", adapter.institution_name
++    assert_equal "okx.com", adapter.institution_domain
++    assert_equal "https://www.okx.com", adapter.institution_url
++    assert_equal "#000000", adapter.institution_color
++  end
++
++  test "prefers provider account institution metadata" do
++    @provider_account.update!(institution_metadata: {
++      "name" => "OKX Sub-account",
++      "domain" => "my.okx.com",
++      "url" => "https://my.okx.com",
++      "color" => "#111111"
++    })
++    adapter = Provider::OkxAdapter.new(@provider_account)
++
++    assert_equal "OKX Sub-account", adapter.institution_name
++    assert_equal "my.okx.com", adapter.institution_domain
++    assert_equal "https://my.okx.com", adapter.institution_url
++    assert_equal "#111111", adapter.institution_color
++  end
 +end
 diff --git a/test/models/provider/okx_test.rb b/test/models/provider/okx_test.rb
 new file mode 100644

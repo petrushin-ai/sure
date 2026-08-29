@@ -2,12 +2,12 @@
 <%= render DS::Dialog.new do |dialog| %>
   <% dialog.with_header(title: t(".title")) %>
   <% dialog.with_body do %>
-    <%= form_with url: complete_account_setup_okx_item_path(@okx_item), method: :post, local: true, class: "space-y-6", data: { turbo_frame: "_top" } do |form| %>
+    <%= styled_form_with url: complete_account_setup_okx_item_path(@okx_item), method: :post, local: true, class: "space-y-6", data: { turbo_frame: "_top" } do |form| %>
       <div class="bg-surface border border-primary p-4 rounded-lg text-sm text-primary"><%= t(".instructions") %></div>
-      <div class="field">
-        <%= form.label :sync_start_date, t("settings.providers.okx_panel.sync_start_date_label"), class: "label" %>
-        <%= form.date_field :sync_start_date, value: @okx_item.sync_start_date || (Date.current - 90.days), max: Date.current, class: "input" %>
-      </div>
+      <%= form.date_field :sync_start_date,
+                          label: t("settings.providers.okx_panel.sync_start_date_label"),
+                          value: @okx_item.sync_start_date || (Date.current - 90.days),
+                          max: Date.current %>
       <% @okx_accounts.each do |okx_account| %>
         <div class="space-y-3 p-3 border border-primary rounded-lg">
           <label class="flex items-center gap-3 cursor-pointer">
@@ -15,7 +15,7 @@
             <span class="flex-1 text-primary"><%= okx_account.name %></span>
             <span class="text-secondary"><%= number_with_delimiter(okx_account.current_balance || 0) %> <%= okx_account.currency %></span>
           </label>
-          <%= text_field_tag "account_names[#{okx_account.id}]", okx_account.name, class: "input", autocomplete: "off", aria: { label: t(".account_name_label") } %>
+          <%= text_field_tag "account_names[#{okx_account.id}]", okx_account.name, class: "form-field__input", autocomplete: "off", aria: { label: t(".account_name_label") } %>
         </div>
       <% end %>
       <div class="flex gap-3">
