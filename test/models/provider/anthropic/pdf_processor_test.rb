@@ -44,6 +44,7 @@ class Provider::Anthropic::PdfProcessorTest < ActiveSupport::TestCase
 
     assert_equal "report_document_analysis", captured[:tool_choice][:name]
     assert captured[:tool_choice][:disable_parallel_tool_use]
+    assert_equal Provider::LlmConcept.pdf_processing_json_schema, captured.dig(:tools, 0, :input_schema)
 
     assert_equal "bank_statement", result.document_type
     assert_equal "Bank of Example, Mar 2026 statement.", result.summary
@@ -58,7 +59,7 @@ class Provider::Anthropic::PdfProcessorTest < ActiveSupport::TestCase
         input: {
           "document_type" => "alien_invasion_form",
           "summary" => "Unknown.",
-          "extracted_data" => {}
+          "extracted_data" => Provider::LlmConcept::PDF_PROCESSING_EXTRACTED_DATA_KEYS.index_with(nil)
         }
       )
     ])
@@ -71,6 +72,31 @@ class Provider::Anthropic::PdfProcessorTest < ActiveSupport::TestCase
     ).process
 
     assert_equal "other", result.document_type
+  end
+
+  test "rejects a tool response that does not match Sure's schema" do
+    fake_response = build_response(content: [
+      tool_use_block(
+        id: "toolu_invalid",
+        name: "report_document_analysis",
+        input: {
+          "document_type" => "bank_statement",
+          "summary" => "Incomplete.",
+          "extracted_data" => {}
+        }
+      )
+    ])
+    client = stub_client(fake_response)
+
+    error = assert_raises(Provider::Anthropic::Error) do
+      Provider::Anthropic::PdfProcessor.new(
+        client,
+        model: "claude-sonnet-4-6",
+        pdf_content: @pdf_content
+      ).process
+    end
+
+    assert_match(/Sure's schema/, error.message)
   end
 
   test "raises when pdf_content is blank" do

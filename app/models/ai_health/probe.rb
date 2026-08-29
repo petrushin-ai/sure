@@ -15,6 +15,16 @@ class AiHealth
     EMBEDDING_TEST_INPUT = "Sure AI health check"
     CHAT_TEST_INPUT = "Reply with OK."
     PDF_TEST_INSTITUTION = "SUREHEALTHCHECKBANK"
+    PDF_TEST_EXPECTED_DATA = {
+      "institution_name" => PDF_TEST_INSTITUTION,
+      "statement_period_start" => "2026-01-01",
+      "statement_period_end" => "2026-01-31",
+      "transaction_count" => 2,
+      "opening_balance" => 100.0,
+      "closing_balance" => 125.0,
+      "currency" => "USD",
+      "account_holder" => "Health Check"
+    }.freeze
     PDF_TEST_LINES = [
       "Bank Statement",
       "Institution: #{PDF_TEST_INSTITUTION}",
@@ -23,6 +33,8 @@ class AiHealth
       "Opening balance: USD 100.00",
       "Closing balance: USD 125.00",
       "Transactions: 2",
+      "2026-01-10 Deposit: USD 50.00",
+      "2026-01-20 Purchase: USD -25.00",
       "Synthetic data only. No customer data."
     ].freeze
     PDF_MAX_RESPONSE_TOKENS = 512
@@ -193,7 +205,8 @@ class AiHealth
             end
           end
 
-          raise Failure, :invalid_response unless valid_pdf_result?(result)
+          raise Failure, :schema_mismatch unless Provider::LlmConcept.valid_pdf_processing_result?(result)
+          raise Failure, :recognition_mismatch unless recognized_pdf_result?(result)
         end
       end
 
@@ -264,22 +277,22 @@ class AiHealth
         response.is_a?(Hash) && response["choices"].is_a?(Array) && response["choices"].any?
       end
 
-      def valid_pdf_result?(result)
-        result.is_a?(Provider::LlmConcept::PdfProcessingResult) &&
-          result.document_type == "bank_statement" &&
-          result.extracted_data.is_a?(Hash) &&
-          result.extracted_data["institution_name"] == PDF_TEST_INSTITUTION
+      def recognized_pdf_result?(result)
+        return false unless result.document_type == "bank_statement"
+
+        data = result.extracted_data.stringify_keys
+        PDF_TEST_EXPECTED_DATA.all? { |key, value| data[key] == value }
       end
 
       def synthetic_pdf
         return @synthetic_pdf if defined?(@synthetic_pdf)
 
         text = PDF_TEST_LINES.map { |line| "(#{line}) Tj T*" }.join("\n")
-        content = "BT /F1 14 Tf 24 190 Td 22 TL\n#{text}\nET\n".b
+        content = "BT /F1 14 Tf 24 275 Td 22 TL\n#{text}\nET\n".b
         objects = [
           "<< /Type /Catalog /Pages 2 0 R >>",
           "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-          "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 480 216] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+          "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 480 300] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
           "<< /Length #{content.bytesize} >>\nstream\n#{content}endstream",
           "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
         ]
