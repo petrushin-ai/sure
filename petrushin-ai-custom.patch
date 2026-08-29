@@ -750,10 +750,27 @@ index 14749894..fb0698eb 100644
    if encryption_ready?
      encrypts :raw_payload
 diff --git a/app/models/binance_account/holdings_processor.rb b/app/models/binance_account/holdings_processor.rb
-index 64d1fb24..00a97bec 100644
+index 64d1fb24..e671bb95 100644
 --- a/app/models/binance_account/holdings_processor.rb
 +++ b/app/models/binance_account/holdings_processor.rb
-@@ -73,7 +73,7 @@ class BinanceAccount::HoldingsProcessor
+@@ -1,7 +1,6 @@
+ # frozen_string_literal: true
+ 
+-# Creates/updates Holdings for each asset in the combined BinanceAccount.
+-# One Holding per (symbol, source) pair.
++# Creates/updates one aggregated Holding per asset in the combined BinanceAccount.
+ class BinanceAccount::HoldingsProcessor
+   include BinanceAccount::UsdConverter
+ 
+@@ -24,6 +23,7 @@ class BinanceAccount::HoldingsProcessor
+       return
+     end
+ 
++    assets = aggregate_by_symbol(assets)
+     assets.each { |asset| process_asset(asset) }
+     cleanup_stale_holdings!(assets)
+   rescue StandardError => e
+@@ -73,13 +73,35 @@ class BinanceAccount::HoldingsProcessor
        symbol = asset["symbol"] || asset[:symbol]
        source = asset["source"] || asset[:source]
        return if symbol.blank?
@@ -762,7 +779,37 @@ index 64d1fb24..00a97bec 100644
  
        holding_external_id(symbol, source)
      end
-@@ -89,16 +89,20 @@ class BinanceAccount::HoldingsProcessor
+ 
+-    def holding_external_id(symbol, source)
+-      "binance_#{symbol}_#{source}_#{Date.current}"
++    def holding_external_id(symbol, _source = nil)
++      "binance_#{symbol}_combined_#{Date.current}"
++    end
++
++    # The combined Sure account can receive the same asset from Spot, Funding,
++    # Earn, Margin and derivatives. Holding's database identity is one
++    # (account, security, date, currency) row, so importing source rows one by
++    # one made the last source overwrite the others. Materialize one economic
++    # position per asset while retaining the source-level data in raw_payload.
++    def aggregate_by_symbol(assets)
++      assets
++        .select { |asset| (asset["total"] || asset[:total]).to_d.positive? }
++        .group_by { |asset| (asset["symbol"] || asset[:symbol]).to_s.upcase }
++        .filter_map do |symbol, rows|
++          next if symbol.blank?
++
++          prices = rows.filter_map { |row| (row["usd_price"] || row[:usd_price]).presence&.to_d }
++          {
++            "symbol" => symbol,
++            "total" => rows.sum { |row| (row["total"] || row[:total]).to_d }.to_s("F"),
++            "source" => "combined",
++            "usd_price" => prices.first&.to_s("F")
++          }
++        end
+     end
+ 
+     def process_asset(asset)
+@@ -89,16 +111,20 @@ class BinanceAccount::HoldingsProcessor
        total  = (asset["total"] || asset[:total]).to_d
        source = asset["source"] || asset[:source]
  
@@ -785,7 +832,7 @@ index 64d1fb24..00a97bec 100644
  
        # Stale rate metadata is intentionally discarded here — it is captured and
        # surfaced at the account level by BinanceAccount::Processor#process_account!.
-@@ -148,4 +152,9 @@ class BinanceAccount::HoldingsProcessor
+@@ -148,4 +174,9 @@ class BinanceAccount::HoldingsProcessor
        Rails.logger.warn "BinanceAccount::HoldingsProcessor - no price found for #{symbol} across all quote pairs; skipping holding"
        nil
      end
@@ -1589,6 +1636,150 @@ index 00000000..84b704cb
 +    okx_items.active.any?(&:credentials_configured?)
 +  end
 +end
+diff --git a/app/models/investment_statement.rb b/app/models/investment_statement.rb
+index 66c8d581..30515c19 100644
+--- a/app/models/investment_statement.rb
++++ b/app/models/investment_statement.rb
+@@ -90,34 +90,43 @@ class InvestmentStatement
+     end
+   end
+ 
+-  # Top holdings by family-currency value
++  # Holdings grouped into economic assets for portfolio-level display. Crypto
++  # integrations deliberately share the CRYPTO:<asset> identity even when an
++  # older row was created with a provider-specific Security/MIC. Non-crypto
++  # securities remain grouped by Security id because the same ticker can refer
++  # to distinct instruments on different exchanges.
++  def portfolio_holdings
++    @portfolio_holdings ||= begin
++      grouped = current_holdings.to_a.group_by { |holding| portfolio_group_key(holding) }
++      portfolio_total = portfolio_value
++
++      grouped.map do |_key, holdings|
++        build_portfolio_holding(holdings, portfolio_total: portfolio_total)
++      end.sort_by { |holding| -holding.amount_money.amount }
++    end
++  end
++
++  # Top economic assets by family-currency value. The returned object preserves
++  # the Holding-shaped interface used by dashboard/report views while exposing
++  # account-level breakdowns for portfolio drill-downs.
+   def top_holdings(limit: 5)
+-    current_holdings
+-      .to_a
+-      .sort_by { |h| -convert_to_family_currency(h.amount, h.currency) }
+-      .first(limit)
++    portfolio_holdings.first(limit)
+   end
+ 
+   # Portfolio allocation by security. Weights and amounts are computed in the
+   # family's currency so cross-currency holdings compare correctly.
+   def allocation
+-    converted = current_holdings.to_a.map do |holding|
+-      [ holding, convert_to_family_currency(holding.amount, holding.currency) ]
+-    end
+-
+-    total = converted.sum { |_, value| value }
++    total = portfolio_holdings.sum { |holding| holding.amount_money.amount }
+     return [] if total.zero?
+ 
+-    converted
+-      .sort_by { |_, value| -value }
+-      .map do |holding, value|
+-        HoldingAllocation.new(
+-          security: holding.security,
+-          amount: Money.new(value, family.currency),
+-          weight: (value / total * 100).round(2),
+-          trend: holding.trend
+-        )
+-      end
++    portfolio_holdings.map do |holding|
++      HoldingAllocation.new(
++        security: holding.security,
++        amount: holding.amount_money,
++        weight: (holding.amount_money.amount / total * 100).round(2),
++        trend: holding.trend
++      )
++    end
+   end
+ 
+   # Unrealized gains across all holdings, summed in family currency
+@@ -309,10 +318,75 @@ class InvestmentStatement
+ 
+     HoldingAllocation = Data.define(:security, :amount, :weight, :trend)
+ 
++    PortfolioHolding = Data.define(:security, :amount_money, :weight, :trend, :quantity, :breakdowns) do
++      delegate :ticker, to: :security
++
++      def name
++        security.name.presence || ticker
++      end
++    end
++
++    PortfolioBreakdown = Data.define(:account, :amount_money, :quantity)
++
+     def investment_account_ids
+       @investment_account_ids ||= investment_accounts.pluck(:id)
+     end
+ 
++    def portfolio_group_key(holding)
++      security = holding.security
++      security.crypto? ? [ "crypto", security.crypto_base_asset || security.ticker ] : [ "security", security.id ]
++    end
++
++    def build_portfolio_holding(holdings, portfolio_total:)
++      converted = holdings.to_h do |holding|
++        [ holding, convert_to_family_currency(holding.amount, holding.currency) ]
++      end
++      amount = converted.values.sum
++
++      PortfolioHolding.new(
++        security: representative_security(holdings),
++        amount_money: Money.new(amount, family.currency),
++        weight: portfolio_total.zero? ? 0 : (amount / portfolio_total * 100).round(2),
++        trend: aggregate_holding_trend(holdings, converted),
++        quantity: holdings.sum(&:qty),
++        breakdowns: portfolio_breakdowns(holdings, converted)
++      )
++    end
++
++    def representative_security(holdings)
++      holdings.map(&:security).uniq.max_by do |security|
++        [ security.display_logo_url.present? ? 1 : 0, security.name.present? ? 1 : 0 ]
++      end
++    end
++
++    def aggregate_holding_trend(holdings, converted)
++      known = holdings.filter_map do |holding|
++        avg_cost = holding.avg_cost
++        [ holding, avg_cost ] if avg_cost
++      end
++      return nil if known.empty?
++
++      current = known.sum { |holding, _avg_cost| converted.fetch(holding) }
++      previous = known.sum do |holding, avg_cost|
++        convert_to_family_currency(holding.qty * avg_cost.amount, holding.currency)
++      end
++
++      Trend.new(
++        current: Money.new(current, family.currency),
++        previous: Money.new(previous, family.currency)
++      )
++    end
++
++    def portfolio_breakdowns(holdings, converted)
++      holdings.group_by(&:account).map do |account, account_holdings|
++        PortfolioBreakdown.new(
++          account: account,
++          amount_money: Money.new(account_holdings.sum { |holding| converted.fetch(holding) }, family.currency),
++          quantity: account_holdings.sum(&:qty)
++        )
++      end.sort_by { |breakdown| -breakdown.amount_money.amount }
++    end
++
+     def totals_query(account_ids:, date_range:)
+       if account_ids.empty?
+         return Totals.new(family, account_ids: account_ids, date_range: date_range).call
 diff --git a/app/models/okx_account.rb b/app/models/okx_account.rb
 new file mode 100644
 index 00000000..052dbf64
@@ -1631,10 +1822,10 @@ index 00000000..052dbf64
 +end
 diff --git a/app/models/okx_account/holdings_processor.rb b/app/models/okx_account/holdings_processor.rb
 new file mode 100644
-index 00000000..51be902a
+index 00000000..a36d8a2f
 --- /dev/null
 +++ b/app/models/okx_account/holdings_processor.rb
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,93 @@
 +class OkxAccount::HoldingsProcessor
 +  include OkxAccount::UsdConverter
 +
@@ -1648,6 +1839,7 @@ index 00000000..51be902a
 +    assets = okx_account.raw_payload&.dig("assets")
 +    return if assets.nil?
 +
++    assets = aggregate_by_symbol(assets)
 +    assets.each { |row| process_asset(row) }
 +    cleanup_stale_holdings!(assets)
 +  end
@@ -1702,8 +1894,29 @@ index 00000000..51be902a
 +      scope.delete_all
 +    end
 +
-+    def external_id(symbol, source)
-+      "okx_#{symbol}_#{source}_#{Date.current}"
++    def external_id(symbol, _source = nil)
++      "okx_#{symbol}_combined_#{Date.current}"
++    end
++
++    # Keep one materialized position per asset in the combined account. OKX
++    # source rows remain available in raw_payload for diagnostics, while this
++    # sum prevents Trading/Funding/Earn rows for one asset from overwriting one
++    # another at Holding's composite unique key.
++    def aggregate_by_symbol(assets)
++      assets
++        .select { |row| (row["total"] || row[:total]).to_d.positive? }
++        .group_by { |row| (row["symbol"] || row[:symbol]).to_s.upcase }
++        .filter_map do |symbol, rows|
++          next if symbol.blank?
++
++          prices = rows.filter_map { |row| (row["usd_price"] || row[:usd_price]).presence&.to_d }
++          {
++            "symbol" => symbol,
++            "total" => rows.sum { |row| (row["total"] || row[:total]).to_d }.to_s("F"),
++            "source" => "combined",
++            "usd_price" => prices.first&.to_s("F")
++          }
++        end
 +    end
 +end
 diff --git a/app/models/okx_account/processor.rb b/app/models/okx_account/processor.rb
@@ -3423,6 +3636,40 @@ index 8586eadf..e828693c 100644
      { key: "kraken", type: "KrakenItem", association: :kraken_items, accounts: :kraken_accounts },
      { key: "onchain_wallet", type: "OnchainWalletItem", association: :onchain_wallet_items, accounts: :onchain_wallet_accounts },
      { key: "coinstats", type: "CoinstatsItem", association: :coinstats_items, accounts: :coinstats_accounts },
+diff --git a/app/models/security.rb b/app/models/security.rb
+index 053997b4..e75ad3b6 100644
+--- a/app/models/security.rb
++++ b/app/models/security.rb
+@@ -76,11 +76,12 @@ class Security < ApplicationRecord
+     kind == "cash"
+   end
+ 
+-  # True when this security represents a crypto asset. Today the only signal
+-  # is the Binance ISO MIC — when we add a second crypto provider, extend
+-  # this check rather than duplicating the test at every call site.
++  # A CRYPTO:<asset> ticker is the provider-neutral identity used by exchange
++  # and on-chain integrations. Legacy Binance market-pair securities predate
++  # that convention, so keep recognizing the Binance MIC as a fallback.
+   def crypto?
+-    exchange_operating_mic == Provider::BinancePublic::BINANCE_MIC
++    ticker.to_s.start_with?(Provider::BinancePublic::CRYPTO_PREFIX) ||
++      exchange_operating_mic == Provider::BinancePublic::BINANCE_MIC
+   end
+ 
+   # Strips the display-currency suffix from a crypto ticker (BTCUSD -> BTC,
+@@ -89,6 +90,12 @@ class Security < ApplicationRecord
+   def crypto_base_asset
+     return nil unless crypto?
+ 
++    if ticker.to_s.start_with?(Provider::BinancePublic::CRYPTO_PREFIX)
++      base = ticker.to_s.delete_prefix(Provider::BinancePublic::CRYPTO_PREFIX)
++      return base if base.match?(SAFE_CRYPTO_SYMBOL)
++      return nil
++    end
++
+     # Delegated rather than parsed here: this stripped a fiat suffix only, so it
+     # answered nil for the "CRYPTO:BTC" form the holdings processors store — the
+     # form every crypto integration writes — and those securities carried no
 diff --git a/app/views/accounts/index.html.erb b/app/views/accounts/index.html.erb
 index 6d13fae0..0d435949 100644
 --- a/app/views/accounts/index.html.erb
@@ -3737,6 +3984,61 @@ index 00000000..9951fde4
 +    <% end %>
 +  <% end %>
 +<% end %>
+diff --git a/app/views/pages/dashboard/_investment_summary.html.erb b/app/views/pages/dashboard/_investment_summary.html.erb
+index b38c2f90..8a74c2a9 100644
+--- a/app/views/pages/dashboard/_investment_summary.html.erb
++++ b/app/views/pages/dashboard/_investment_summary.html.erb
+@@ -41,20 +41,38 @@
+           <tbody class="font-medium text-sm">
+             <% holdings.each_with_index do |holding, idx| %>
+               <tr class="<%= idx < holdings.size - 1 ? "table-divider" : "" %>">
+-                <td class="p-4">
+-                  <div class="flex items-center gap-3">
+-                    <% if holding.security.logo_url.present? %>
+-                      <img src="<%= holding.security.logo_url %>" alt="<%= holding.ticker %>" class="w-8 h-8 rounded-full">
+-                    <% else %>
+-                      <div class="w-8 h-8 rounded-full bg-container-inset flex items-center justify-center text-xs font-medium text-secondary">
+-                        <%= holding.ticker.to_s.first(2).presence || "—" %>
++                <td class="p-4 align-top">
++                  <details class="group" data-portfolio-ticker="<%= holding.ticker %>" <%= "open" if holding.breakdowns.one? %>>
++                    <summary class="list-none [&::-webkit-details-marker]:hidden cursor-pointer">
++                      <div class="flex items-center gap-3">
++                        <% if holding.security.display_logo_url.present? %>
++                          <img src="<%= holding.security.display_logo_url %>" alt="<%= holding.ticker %>" class="w-8 h-8 rounded-full">
++                        <% else %>
++                          <div class="w-8 h-8 rounded-full bg-container-inset flex items-center justify-center text-xs font-medium text-secondary">
++                            <%= holding.ticker.to_s.first(2).presence || "—" %>
++                          </div>
++                        <% end %>
++                        <div class="max-w-32 min-w-0">
++                          <p class="font-medium truncate"><%= holding.ticker %></p>
++                          <p class="text-xs text-secondary"><%= truncate(holding.name, length: 20) %></p>
++                        </div>
++                        <% if holding.breakdowns.any? %>
++                          <%= icon "chevron-down", size: "xs", class: "text-secondary transition-transform group-open:rotate-180" %>
++                        <% end %>
++                      </div>
++                    </summary>
++
++                    <% if holding.breakdowns.any? %>
++                      <div class="mt-3 ml-11 space-y-2 text-xs">
++                        <% holding.breakdowns.each do |breakdown| %>
++                          <div class="flex items-center justify-between gap-3 text-secondary">
++                            <span class="truncate"><%= breakdown.account.name %></span>
++                            <span class="privacy-sensitive whitespace-nowrap"><%= format_money(breakdown.amount_money) %></span>
++                          </div>
++                        <% end %>
+                       </div>
+                     <% end %>
+-                    <div class="max-w-32">
+-                      <p class="font-medium truncate"><%= holding.ticker %></p>
+-                      <p class="text-xs text-secondary"><%= truncate(holding.name, length: 20) %></p>
+-                    </div>
+-                  </div>
++                  </details>
+                 </td>
+ 
+                 <td class="p-4 text-right text-secondary privacy-sensitive">
 diff --git a/app/views/settings/providers/_binance_panel.html.erb b/app/views/settings/providers/_binance_panel.html.erb
 index 1b329f16..f633a54e 100644
 --- a/app/views/settings/providers/_binance_panel.html.erb
@@ -4792,10 +5094,10 @@ index 40f62952..5c76ea91 100644
    add_foreign_key "plaid_accounts", "plaid_items"
 diff --git a/docs/UPSTREAM.md b/docs/UPSTREAM.md
 new file mode 100644
-index 00000000..854b5a1c
+index 00000000..b43db66f
 --- /dev/null
 +++ b/docs/UPSTREAM.md
-@@ -0,0 +1,342 @@
+@@ -0,0 +1,367 @@
 +# Maintaining the Petrushin AI Sure fork
 +
 +This repository is a native GitHub fork of [`we-promise/sure`](https://github.com/we-promise/sure).
@@ -4995,6 +5297,26 @@ index 00000000..854b5a1c
 +  input `color-scheme` so the browser picker, field background, text and
 +  calendar indicator remain legible.
 +
++### SURE-011 — Canonical crypto portfolio aggregation
++
++- Source: direct owner request in `#devops`, 2026-08-29.
++- Status: active downstream portfolio correction.
++- Purpose: keep provider-neutral `CRYPTO:<asset>` security identity while
++  displaying one portfolio row per economic crypto asset; sum value and
++  quantity across Binance, OKX and other institutions in family currency;
++  calculate weight against the complete investment portfolio; and expose the
++  exact Sure-account breakdown without encoding an institution into the
++  ticker. Materialize one holding per asset inside each combined Binance/OKX
++  account so Spot, Funding, Earn and other product rows add together instead
++  of overwriting the same `(account, security, date, currency)` holding.
++- Main conflict areas: `Security#crypto?`, `InvestmentStatement` portfolio
++  aggregation, the dashboard investment summary, Binance/OKX holdings
++  processors, and their model/controller tests.
++- Retirement rule: remove only after upstream groups provider-neutral crypto
++  identities across accounts, preserves institution-level drill-down, uses a
++  portfolio-level weight denominator, and materializes every combined exchange
++  account without last-source-wins holding loss.
++
 +If upstream absorbs a patch, record the upstream PR and commit here, compare
 +behavior and tests, remove only the duplicated downstream implementation, and
 +regenerate the patch. Do not silently delete a ledger entry.
@@ -5088,8 +5410,13 @@ index 00000000..854b5a1c
 +  test/models/provider/okx_test.rb \
 +  test/models/okx_item_test.rb \
 +  test/models/okx_item/importer_test.rb \
++  test/models/okx_account/holdings_processor_test.rb \
 +  test/controllers/okx_items_controller_test.rb \
 +  test/jobs/sync_okx_job_test.rb
++bin/rails test \
++  test/models/security_test.rb \
++  test/models/investment_statement_test.rb \
++  test/controllers/pages_controller_test.rb
 +bin/rails test:system TEST=test/system/admin/system_health_test.rb
 +bin/rubocop \
 +  app/models/ai_health.rb \
@@ -5140,10 +5467,10 @@ index 00000000..854b5a1c
 +  sufficient.
 diff --git a/docs/hosting/binance.md b/docs/hosting/binance.md
 new file mode 100644
-index 00000000..197a28c4
+index 00000000..d0619575
 --- /dev/null
 +++ b/docs/hosting/binance.md
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,119 @@
 +# Binance
 +
 +Sure connects directly to Binance with a read-only API key. No third-party
@@ -5220,6 +5547,14 @@ index 00000000..197a28c4
 +arbitrary fiat pair such as `BTCBRL`. Current holding prices still come from
 +Binance and are converted into the family's base currency before import.
 +
++Spot, Funding, Earn, Margin and derivative source rows for the same asset are
++summed into one materialized holding inside that Binance account. The source
++rows remain in the encrypted provider payload for diagnostics. At portfolio
++level, the same `CRYPTO:<asset>` held through other institutions is shown once;
++the dashboard disclosure lists each named account and its share. Do not add
++`BINANCE:` to the ticker: the institution is custody metadata, not asset
++identity.
++
 +## Schedule
 +
 +The native Sidekiq scheduler enqueues every active Binance connection every
@@ -5257,10 +5592,10 @@ index 00000000..197a28c4
 +never included.
 diff --git a/docs/hosting/okx.md b/docs/hosting/okx.md
 new file mode 100644
-index 00000000..37c75b13
+index 00000000..57d3ab40
 --- /dev/null
 +++ b/docs/hosting/okx.md
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,143 @@
 +# OKX
 +
 +Sure connects directly to OKX API v5 with a production read-only API key. No
@@ -5372,8 +5707,15 @@ index 00000000..37c75b13
 +USDC, then USD. A quote failure retains the last good price; without one, the
 +asset remains explicitly unpriced rather than being treated as zero.
 +
-+Every holding resolves to the exact local security `CRYPTO:<asset>` with OKX
-+MIC `XOKX`. Generic fuzzy security search is not used.
++Every holding resolves to the exact provider-neutral local security
++`CRYPTO:<asset>`. Generic fuzzy security search is not used, and an OKX MIC on
++an older row does not make the asset a different security. Trading, Funding,
++Earn and other non-overlapping source rows for the same asset are summed into
++one materialized holding inside the OKX account while their source detail
++remains in the encrypted provider payload. At portfolio level, Sure shows one
++row per asset with a disclosure breakdown by named institution account. Do not
++add `OKX:` to the ticker: the institution is custody metadata, not asset
++identity.
 +
 +## Schedule and diagnostics
 +
@@ -5639,6 +5981,42 @@ index 00000000..b417c227
 +    assert_select "input.input", count: 0
 +  end
 +end
+diff --git a/test/controllers/pages_controller_test.rb b/test/controllers/pages_controller_test.rb
+index 757cf922..636ef5e3 100644
+--- a/test/controllers/pages_controller_test.rb
++++ b/test/controllers/pages_controller_test.rb
+@@ -14,6 +14,31 @@ class PagesControllerTest < ActionDispatch::IntegrationTest
+     assert_response :ok
+   end
+ 
++  test "dashboard aggregates crypto holdings and renders institution breakdown" do
++    @family.update!(currency: "USD")
++    binance = @family.accounts.create!(
++      owner: @user, name: "Binance Dashboard", balance: 1_000_000, cash_balance: 0,
++      currency: "USD", accountable: Crypto.new(subtype: "exchange")
++    )
++    okx = @family.accounts.create!(
++      owner: @user, name: "OKX Dashboard", balance: 500_000, cash_balance: 0,
++      currency: "USD", accountable: Crypto.new(subtype: "exchange")
++    )
++    binance_security = Security.create!(ticker: "CRYPTO:DASHAGG", name: "Dashboard Asset", exchange_operating_mic: "XBNC")
++    okx_security = Security.create!(ticker: "CRYPTO:DASHAGG", name: "Dashboard Asset", exchange_operating_mic: "XOKX")
++    Holding.create!(account: binance, security: binance_security, date: Date.current, qty: 2, price: 500_000, amount: 1_000_000, currency: "USD")
++    Holding.create!(account: okx, security: okx_security, date: Date.current, qty: 1, price: 500_000, amount: 500_000, currency: "USD")
++
++    get root_path
++
++    assert_response :ok
++    assert_select "#investment-summary details[data-portfolio-ticker='CRYPTO:DASHAGG']", count: 1 do
++      assert_select "summary", text: /CRYPTO:DASHAGG/
++      assert_select "span", text: "Binance Dashboard"
++      assert_select "span", text: "OKX Dashboard"
++    end
++  end
++
+   test "inactive user's existing session is revoked" do
+     session_record = @user.sessions.order(:created_at).last
+     @user.update_column(:active, false)
 diff --git a/test/jobs/sync_binance_connection_job_test.rb b/test/jobs/sync_binance_connection_job_test.rb
 new file mode 100644
 index 00000000..ca89270d
@@ -5906,6 +6284,35 @@ index 5e7430cd..c808a2c7 100644
    test "failed LLM probe writes a system-wide debug entry and Rails log without secrets" do
      models = stub(list: { "data" => [ { "id" => "another-model" } ] })
      @probe.stubs(:openai_client).returns(stub(models: models))
+diff --git a/test/models/binance_account/holdings_processor_test.rb b/test/models/binance_account/holdings_processor_test.rb
+index 3b5c3a39..9ccfa2b9 100644
+--- a/test/models/binance_account/holdings_processor_test.rb
++++ b/test/models/binance_account/holdings_processor_test.rb
+@@ -69,6 +69,24 @@ class BinanceAccount::HoldingsProcessorTest < ActiveSupport::TestCase
+ 
+     BinanceAccount::HoldingsProcessor.new(@ba).process
+   end
++
++  test "aggregates the same asset across Binance products into one holding" do
++    ExchangeRate.create!(from_currency: "USD", to_currency: "EUR", date: Date.current, rate: 1)
++    Security.find_or_create_by!(ticker: "CRYPTO:BTC") { |security| security.name = "BTC" }
++    BinanceAccount::HoldingsProcessor.any_instance.stubs(:fetch_price).with("BTC").returns(100)
++
++    write_payload([
++      { "symbol" => "BTC", "total" => "1.25", "source" => "spot", "usd_price" => "100" },
++      { "symbol" => "BTC", "total" => "0.75", "source" => "simple_earn", "usd_price" => "100" }
++    ])
++
++    BinanceAccount::HoldingsProcessor.new(@ba).process
++
++    holding = @account.reload.current_holdings.find { |row| row.ticker == "CRYPTO:BTC" }
++    assert_equal 2, holding.qty
++    assert_equal 200, holding.amount
++    assert_match(/binance_BTC_combined_/, holding.external_id)
++  end
+   # The reported bug. The processor wrote whatever Binance returned and never
+   # removed what it stopped returning, so an asset sold between two syncs kept
+   # its row for the day — and the account page reads exactly that day.
 diff --git a/test/models/binance_account/security_resolver_test.rb b/test/models/binance_account/security_resolver_test.rb
 new file mode 100644
 index 00000000..b1acc26d
@@ -6497,6 +6904,102 @@ index c9a03bf3..7cde1d6d 100644
    test "sync_status_summary with no accounts" do
      assert_equal I18n.t("binance_items.binance_item.sync_status.no_accounts"), @item.sync_status_summary
    end
+diff --git a/test/models/investment_statement_test.rb b/test/models/investment_statement_test.rb
+index 232eecc7..086587b1 100644
+--- a/test/models/investment_statement_test.rb
++++ b/test/models/investment_statement_test.rb
+@@ -87,6 +87,47 @@ class InvestmentStatementTest < ActiveSupport::TestCase
+     assert_equal %w[ASML AAPL], top.map(&:ticker)
+   end
+ 
++  test "top_holdings aggregates one crypto asset across institutions and exposes account breakdown" do
++    binance = create_investment_account(balance: 1200, cash_balance: 200, currency: "USD")
++    okx = create_investment_account(balance: 800, cash_balance: 300, currency: "USD")
++    binance.update!(name: "Binance (A)")
++    okx.update!(name: "OKX (A)")
++
++    binance_eth = Security.create!(ticker: "CRYPTO:ETH", name: "Ethereum", exchange_operating_mic: "XBNC")
++    okx_eth = Security.create!(ticker: "CRYPTO:ETH", name: "Ethereum", exchange_operating_mic: "XOKX")
++
++    Holding.create!(
++      account: binance, security: binance_eth, date: Date.current,
++      qty: 2, price: 500, amount: 1000, currency: "USD"
++    )
++    Holding.create!(
++      account: okx, security: okx_eth, date: Date.current,
++      qty: 1, price: 500, amount: 500, currency: "USD"
++    )
++
++    top = @statement.top_holdings(limit: 5)
++
++    assert_equal 1, top.size
++    assert_equal "CRYPTO:ETH", top.first.ticker
++    assert_equal 3, top.first.quantity
++    assert_equal 1500, top.first.amount_money.amount
++    assert_equal 75, top.first.weight
++    assert_equal [ "Binance (A)", "OKX (A)" ], top.first.breakdowns.map { |row| row.account.name }
++    assert_equal [ 1000, 500 ], top.first.breakdowns.map { |row| row.amount_money.amount }
++  end
++
++  test "top_holdings does not merge non-crypto instruments that only share a ticker" do
++    nasdaq = create_investment_account(balance: 1000, currency: "USD")
++    london = create_investment_account(balance: 500, currency: "USD")
++    nasdaq_security = Security.create!(ticker: "TEST", name: "Test US", exchange_operating_mic: "XNAS")
++    london_security = Security.create!(ticker: "TEST", name: "Test UK", exchange_operating_mic: "XLON")
++
++    Holding.create!(account: nasdaq, security: nasdaq_security, date: Date.current, qty: 10, price: 100, amount: 1000, currency: "USD")
++    Holding.create!(account: london, security: london_security, date: Date.current, qty: 5, price: 100, amount: 500, currency: "USD")
++
++    assert_equal 2, @statement.top_holdings(limit: 5).size
++  end
++
+   test "allocation weights sum to 100% with mixed currencies" do
+     usd_account = create_investment_account(balance: 2100, currency: "USD")
+     eur_account = create_investment_account(balance: 2000, currency: "EUR")
+diff --git a/test/models/okx_account/holdings_processor_test.rb b/test/models/okx_account/holdings_processor_test.rb
+new file mode 100644
+index 00000000..145b7941
+--- /dev/null
++++ b/test/models/okx_account/holdings_processor_test.rb
+@@ -0,0 +1,38 @@
++# frozen_string_literal: true
++
++require "test_helper"
++
++class OkxAccount::HoldingsProcessorTest < ActiveSupport::TestCase
++  setup do
++    @family = families(:dylan_family)
++    @family.update!(currency: "USD")
++    @item = OkxItem.create!(
++      family: @family, name: "OKX (A)", api_key: "k", api_secret: "s", passphrase: "p"
++    )
++    @provider_account = @item.okx_accounts.create!(
++      name: "OKX (A)", account_type: "combined", currency: "USD", current_balance: 300,
++      raw_payload: {
++        "assets" => [
++          { "symbol" => "ETH", "total" => "2", "source" => "trading", "usd_price" => "100" },
++          { "symbol" => "ETH", "total" => "1", "source" => "simple_earn", "usd_price" => "100" }
++        ]
++      }
++    )
++    @account = Account.create!(
++      family: @family, name: "OKX (A)", balance: 300, cash_balance: 0, currency: "USD",
++      accountable: Crypto.create!(subtype: "exchange")
++    )
++    AccountProvider.create!(account: @account, provider: @provider_account)
++  end
++
++  test "aggregates the same asset across OKX products into one holding" do
++    Security.find_or_create_by!(ticker: "CRYPTO:ETH") { |security| security.name = "ETH" }
++
++    OkxAccount::HoldingsProcessor.new(@provider_account).process
++
++    holding = @account.reload.current_holdings.find { |row| row.ticker == "CRYPTO:ETH" }
++    assert_equal 3, holding.qty
++    assert_equal 300, holding.amount
++    assert_match(/okx_ETH_combined_/, holding.external_id)
++  end
++end
 diff --git a/test/models/okx_item/importer_test.rb b/test/models/okx_item/importer_test.rb
 new file mode 100644
 index 00000000..6a24ec8e
@@ -7356,6 +7859,36 @@ index cb57b818..95815b1a 100644
      def build_processor(error, trace)
        client = mock
        client.expects(:chat).raises(error)
+diff --git a/test/models/security_test.rb b/test/models/security_test.rb
+index 09225eab..14299f8a 100644
+--- a/test/models/security_test.rb
++++ b/test/models/security_test.rb
+@@ -69,16 +69,24 @@ class SecurityTest < ActiveSupport::TestCase
+     assert_not_includes standard_tickers, "CASH-#{account.id.upcase}"
+   end
+ 
+-  test "crypto? is true for Binance MIC and false otherwise" do
++  test "crypto? recognizes provider-neutral CRYPTO tickers and legacy Binance MIC" do
+     crypto = Security.new(ticker: "BTCUSD", exchange_operating_mic: Provider::BinancePublic::BINANCE_MIC)
++    okx = Security.new(ticker: "CRYPTO:ETH", exchange_operating_mic: "XOKX")
+     equity = Security.new(ticker: "AAPL",   exchange_operating_mic: "XNAS")
+     offline = Security.new(ticker: "ACME",  exchange_operating_mic: nil)
+ 
+     assert crypto.crypto?
++    assert okx.crypto?
+     assert_not equity.crypto?
+     assert_not offline.crypto?
+   end
+ 
++  test "crypto_base_asset resolves provider-neutral OKX identity" do
++    security = Security.new(ticker: "CRYPTO:ETH", exchange_operating_mic: "XOKX")
++
++    assert_equal "ETH", security.crypto_base_asset
++  end
++
+   test "crypto_base_asset strips the display-currency suffix" do
+     %w[USD EUR JPY BRL TRY].each do |quote|
+       sec = Security.new(ticker: "BTC#{quote}", exchange_operating_mic: Provider::BinancePublic::BINANCE_MIC)
 diff --git a/test/system/admin/system_health_test.rb b/test/system/admin/system_health_test.rb
 index 4b102dd4..c7721dcc 100644
 --- a/test/system/admin/system_health_test.rb

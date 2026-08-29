@@ -87,6 +87,47 @@ class InvestmentStatementTest < ActiveSupport::TestCase
     assert_equal %w[ASML AAPL], top.map(&:ticker)
   end
 
+  test "top_holdings aggregates one crypto asset across institutions and exposes account breakdown" do
+    binance = create_investment_account(balance: 1200, cash_balance: 200, currency: "USD")
+    okx = create_investment_account(balance: 800, cash_balance: 300, currency: "USD")
+    binance.update!(name: "Binance (A)")
+    okx.update!(name: "OKX (A)")
+
+    binance_eth = Security.create!(ticker: "CRYPTO:ETH", name: "Ethereum", exchange_operating_mic: "XBNC")
+    okx_eth = Security.create!(ticker: "CRYPTO:ETH", name: "Ethereum", exchange_operating_mic: "XOKX")
+
+    Holding.create!(
+      account: binance, security: binance_eth, date: Date.current,
+      qty: 2, price: 500, amount: 1000, currency: "USD"
+    )
+    Holding.create!(
+      account: okx, security: okx_eth, date: Date.current,
+      qty: 1, price: 500, amount: 500, currency: "USD"
+    )
+
+    top = @statement.top_holdings(limit: 5)
+
+    assert_equal 1, top.size
+    assert_equal "CRYPTO:ETH", top.first.ticker
+    assert_equal 3, top.first.quantity
+    assert_equal 1500, top.first.amount_money.amount
+    assert_equal 75, top.first.weight
+    assert_equal [ "Binance (A)", "OKX (A)" ], top.first.breakdowns.map { |row| row.account.name }
+    assert_equal [ 1000, 500 ], top.first.breakdowns.map { |row| row.amount_money.amount }
+  end
+
+  test "top_holdings does not merge non-crypto instruments that only share a ticker" do
+    nasdaq = create_investment_account(balance: 1000, currency: "USD")
+    london = create_investment_account(balance: 500, currency: "USD")
+    nasdaq_security = Security.create!(ticker: "TEST", name: "Test US", exchange_operating_mic: "XNAS")
+    london_security = Security.create!(ticker: "TEST", name: "Test UK", exchange_operating_mic: "XLON")
+
+    Holding.create!(account: nasdaq, security: nasdaq_security, date: Date.current, qty: 10, price: 100, amount: 1000, currency: "USD")
+    Holding.create!(account: london, security: london_security, date: Date.current, qty: 5, price: 100, amount: 500, currency: "USD")
+
+    assert_equal 2, @statement.top_holdings(limit: 5).size
+  end
+
   test "allocation weights sum to 100% with mixed currencies" do
     usd_account = create_investment_account(balance: 2100, currency: "USD")
     eur_account = create_investment_account(balance: 2000, currency: "EUR")

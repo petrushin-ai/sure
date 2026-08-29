@@ -69,6 +69,24 @@ class BinanceAccount::HoldingsProcessorTest < ActiveSupport::TestCase
 
     BinanceAccount::HoldingsProcessor.new(@ba).process
   end
+
+  test "aggregates the same asset across Binance products into one holding" do
+    ExchangeRate.create!(from_currency: "USD", to_currency: "EUR", date: Date.current, rate: 1)
+    Security.find_or_create_by!(ticker: "CRYPTO:BTC") { |security| security.name = "BTC" }
+    BinanceAccount::HoldingsProcessor.any_instance.stubs(:fetch_price).with("BTC").returns(100)
+
+    write_payload([
+      { "symbol" => "BTC", "total" => "1.25", "source" => "spot", "usd_price" => "100" },
+      { "symbol" => "BTC", "total" => "0.75", "source" => "simple_earn", "usd_price" => "100" }
+    ])
+
+    BinanceAccount::HoldingsProcessor.new(@ba).process
+
+    holding = @account.reload.current_holdings.find { |row| row.ticker == "CRYPTO:BTC" }
+    assert_equal 2, holding.qty
+    assert_equal 200, holding.amount
+    assert_match(/binance_BTC_combined_/, holding.external_id)
+  end
   # The reported bug. The processor wrote whatever Binance returned and never
   # removed what it stopped returning, so an asset sold between two syncs kept
   # its row for the day — and the account page reads exactly that day.

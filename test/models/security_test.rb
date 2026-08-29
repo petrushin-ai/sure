@@ -69,14 +69,22 @@ class SecurityTest < ActiveSupport::TestCase
     assert_not_includes standard_tickers, "CASH-#{account.id.upcase}"
   end
 
-  test "crypto? is true for Binance MIC and false otherwise" do
+  test "crypto? recognizes provider-neutral CRYPTO tickers and legacy Binance MIC" do
     crypto = Security.new(ticker: "BTCUSD", exchange_operating_mic: Provider::BinancePublic::BINANCE_MIC)
+    okx = Security.new(ticker: "CRYPTO:ETH", exchange_operating_mic: "XOKX")
     equity = Security.new(ticker: "AAPL",   exchange_operating_mic: "XNAS")
     offline = Security.new(ticker: "ACME",  exchange_operating_mic: nil)
 
     assert crypto.crypto?
+    assert okx.crypto?
     assert_not equity.crypto?
     assert_not offline.crypto?
+  end
+
+  test "crypto_base_asset resolves provider-neutral OKX identity" do
+    security = Security.new(ticker: "CRYPTO:ETH", exchange_operating_mic: "XOKX")
+
+    assert_equal "ETH", security.crypto_base_asset
   end
 
   test "crypto_base_asset strips the display-currency suffix" do

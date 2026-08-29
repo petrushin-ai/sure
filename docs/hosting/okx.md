@@ -109,8 +109,15 @@ OKX-provided USD equity is preferred. Other assets are quoted against USDT,
 USDC, then USD. A quote failure retains the last good price; without one, the
 asset remains explicitly unpriced rather than being treated as zero.
 
-Every holding resolves to the exact local security `CRYPTO:<asset>` with OKX
-MIC `XOKX`. Generic fuzzy security search is not used.
+Every holding resolves to the exact provider-neutral local security
+`CRYPTO:<asset>`. Generic fuzzy security search is not used, and an OKX MIC on
+an older row does not make the asset a different security. Trading, Funding,
+Earn and other non-overlapping source rows for the same asset are summed into
+one materialized holding inside the OKX account while their source detail
+remains in the encrypted provider payload. At portfolio level, Sure shows one
+row per asset with a disclosure breakdown by named institution account. Do not
+add `OKX:` to the ticker: the institution is custody metadata, not asset
+identity.
 
 ## Schedule and diagnostics
 

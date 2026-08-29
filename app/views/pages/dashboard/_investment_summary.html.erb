@@ -41,20 +41,38 @@
           <tbody class="font-medium text-sm">
             <% holdings.each_with_index do |holding, idx| %>
               <tr class="<%= idx < holdings.size - 1 ? "table-divider" : "" %>">
-                <td class="p-4">
-                  <div class="flex items-center gap-3">
-                    <% if holding.security.logo_url.present? %>
-                      <img src="<%= holding.security.logo_url %>" alt="<%= holding.ticker %>" class="w-8 h-8 rounded-full">
-                    <% else %>
-                      <div class="w-8 h-8 rounded-full bg-container-inset flex items-center justify-center text-xs font-medium text-secondary">
-                        <%= holding.ticker.to_s.first(2).presence || "—" %>
+                <td class="p-4 align-top">
+                  <details class="group" data-portfolio-ticker="<%= holding.ticker %>" <%= "open" if holding.breakdowns.one? %>>
+                    <summary class="list-none [&::-webkit-details-marker]:hidden cursor-pointer">
+                      <div class="flex items-center gap-3">
+                        <% if holding.security.display_logo_url.present? %>
+                          <img src="<%= holding.security.display_logo_url %>" alt="<%= holding.ticker %>" class="w-8 h-8 rounded-full">
+                        <% else %>
+                          <div class="w-8 h-8 rounded-full bg-container-inset flex items-center justify-center text-xs font-medium text-secondary">
+                            <%= holding.ticker.to_s.first(2).presence || "—" %>
+                          </div>
+                        <% end %>
+                        <div class="max-w-32 min-w-0">
+                          <p class="font-medium truncate"><%= holding.ticker %></p>
+                          <p class="text-xs text-secondary"><%= truncate(holding.name, length: 20) %></p>
+                        </div>
+                        <% if holding.breakdowns.any? %>
+                          <%= icon "chevron-down", size: "xs", class: "text-secondary transition-transform group-open:rotate-180" %>
+                        <% end %>
+                      </div>
+                    </summary>
+
+                    <% if holding.breakdowns.any? %>
+                      <div class="mt-3 ml-11 space-y-2 text-xs">
+                        <% holding.breakdowns.each do |breakdown| %>
+                          <div class="flex items-center justify-between gap-3 text-secondary">
+                            <span class="truncate"><%= breakdown.account.name %></span>
+                            <span class="privacy-sensitive whitespace-nowrap"><%= format_money(breakdown.amount_money) %></span>
+                          </div>
+                        <% end %>
                       </div>
                     <% end %>
-                    <div class="max-w-32">
-                      <p class="font-medium truncate"><%= holding.ticker %></p>
-                      <p class="text-xs text-secondary"><%= truncate(holding.name, length: 20) %></p>
-                    </div>
-                  </div>
+                  </details>
                 </td>
 
                 <td class="p-4 text-right text-secondary privacy-sensitive">

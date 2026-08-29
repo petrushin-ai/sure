@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
-# Creates/updates Holdings for each asset in the combined BinanceAccount.
-# One Holding per (symbol, source) pair.
+# Creates/updates one aggregated Holding per asset in the combined BinanceAccount.
 class BinanceAccount::HoldingsProcessor
   include BinanceAccount::UsdConverter
 
@@ -24,6 +23,7 @@ class BinanceAccount::HoldingsProcessor
       return
     end
 
+    assets = aggregate_by_symbol(assets)
     assets.each { |asset| process_asset(asset) }
     cleanup_stale_holdings!(assets)
   rescue StandardError => e
@@ -78,8 +78,30 @@ class BinanceAccount::HoldingsProcessor
       holding_external_id(symbol, source)
     end
 
-    def holding_external_id(symbol, source)
-      "binance_#{symbol}_#{source}_#{Date.current}"
+    def holding_external_id(symbol, _source = nil)
+      "binance_#{symbol}_combined_#{Date.current}"
+    end
+
+    # The combined Sure account can receive the same asset from Spot, Funding,
+    # Earn, Margin and derivatives. Holding's database identity is one
+    # (account, security, date, currency) row, so importing source rows one by
+    # one made the last source overwrite the others. Materialize one economic
+    # position per asset while retaining the source-level data in raw_payload.
+    def aggregate_by_symbol(assets)
+      assets
+        .select { |asset| (asset["total"] || asset[:total]).to_d.positive? }
+        .group_by { |asset| (asset["symbol"] || asset[:symbol]).to_s.upcase }
+        .filter_map do |symbol, rows|
+          next if symbol.blank?
+
+          prices = rows.filter_map { |row| (row["usd_price"] || row[:usd_price]).presence&.to_d }
+          {
+            "symbol" => symbol,
+            "total" => rows.sum { |row| (row["total"] || row[:total]).to_d }.to_s("F"),
+            "source" => "combined",
+            "usd_price" => prices.first&.to_s("F")
+          }
+        end
     end
 
     def process_asset(asset)

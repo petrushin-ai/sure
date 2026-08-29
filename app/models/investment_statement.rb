@@ -90,34 +90,43 @@ class InvestmentStatement
     end
   end
 
-  # Top holdings by family-currency value
+  # Holdings grouped into economic assets for portfolio-level display. Crypto
+  # integrations deliberately share the CRYPTO:<asset> identity even when an
+  # older row was created with a provider-specific Security/MIC. Non-crypto
+  # securities remain grouped by Security id because the same ticker can refer
+  # to distinct instruments on different exchanges.
+  def portfolio_holdings
+    @portfolio_holdings ||= begin
+      grouped = current_holdings.to_a.group_by { |holding| portfolio_group_key(holding) }
+      portfolio_total = portfolio_value
+
+      grouped.map do |_key, holdings|
+        build_portfolio_holding(holdings, portfolio_total: portfolio_total)
+      end.sort_by { |holding| -holding.amount_money.amount }
+    end
+  end
+
+  # Top economic assets by family-currency value. The returned object preserves
+  # the Holding-shaped interface used by dashboard/report views while exposing
+  # account-level breakdowns for portfolio drill-downs.
   def top_holdings(limit: 5)
-    current_holdings
-      .to_a
-      .sort_by { |h| -convert_to_family_currency(h.amount, h.currency) }
-      .first(limit)
+    portfolio_holdings.first(limit)
   end
 
   # Portfolio allocation by security. Weights and amounts are computed in the
   # family's currency so cross-currency holdings compare correctly.
   def allocation
-    converted = current_holdings.to_a.map do |holding|
-      [ holding, convert_to_family_currency(holding.amount, holding.currency) ]
-    end
-
-    total = converted.sum { |_, value| value }
+    total = portfolio_holdings.sum { |holding| holding.amount_money.amount }
     return [] if total.zero?
 
-    converted
-      .sort_by { |_, value| -value }
-      .map do |holding, value|
-        HoldingAllocation.new(
-          security: holding.security,
-          amount: Money.new(value, family.currency),
-          weight: (value / total * 100).round(2),
-          trend: holding.trend
-        )
-      end
+    portfolio_holdings.map do |holding|
+      HoldingAllocation.new(
+        security: holding.security,
+        amount: holding.amount_money,
+        weight: (holding.amount_money.amount / total * 100).round(2),
+        trend: holding.trend
+      )
+    end
   end
 
   # Unrealized gains across all holdings, summed in family currency
@@ -309,8 +318,73 @@ class InvestmentStatement
 
     HoldingAllocation = Data.define(:security, :amount, :weight, :trend)
 
+    PortfolioHolding = Data.define(:security, :amount_money, :weight, :trend, :quantity, :breakdowns) do
+      delegate :ticker, to: :security
+
+      def name
+        security.name.presence || ticker
+      end
+    end
+
+    PortfolioBreakdown = Data.define(:account, :amount_money, :quantity)
+
     def investment_account_ids
       @investment_account_ids ||= investment_accounts.pluck(:id)
+    end
+
+    def portfolio_group_key(holding)
+      security = holding.security
+      security.crypto? ? [ "crypto", security.crypto_base_asset || security.ticker ] : [ "security", security.id ]
+    end
+
+    def build_portfolio_holding(holdings, portfolio_total:)
+      converted = holdings.to_h do |holding|
+        [ holding, convert_to_family_currency(holding.amount, holding.currency) ]
+      end
+      amount = converted.values.sum
+
+      PortfolioHolding.new(
+        security: representative_security(holdings),
+        amount_money: Money.new(amount, family.currency),
+        weight: portfolio_total.zero? ? 0 : (amount / portfolio_total * 100).round(2),
+        trend: aggregate_holding_trend(holdings, converted),
+        quantity: holdings.sum(&:qty),
+        breakdowns: portfolio_breakdowns(holdings, converted)
+      )
+    end
+
+    def representative_security(holdings)
+      holdings.map(&:security).uniq.max_by do |security|
+        [ security.display_logo_url.present? ? 1 : 0, security.name.present? ? 1 : 0 ]
+      end
+    end
+
+    def aggregate_holding_trend(holdings, converted)
+      known = holdings.filter_map do |holding|
+        avg_cost = holding.avg_cost
+        [ holding, avg_cost ] if avg_cost
+      end
+      return nil if known.empty?
+
+      current = known.sum { |holding, _avg_cost| converted.fetch(holding) }
+      previous = known.sum do |holding, avg_cost|
+        convert_to_family_currency(holding.qty * avg_cost.amount, holding.currency)
+      end
+
+      Trend.new(
+        current: Money.new(current, family.currency),
+        previous: Money.new(previous, family.currency)
+      )
+    end
+
+    def portfolio_breakdowns(holdings, converted)
+      holdings.group_by(&:account).map do |account, account_holdings|
+        PortfolioBreakdown.new(
+          account: account,
+          amount_money: Money.new(account_holdings.sum { |holding| converted.fetch(holding) }, family.currency),
+          quantity: account_holdings.sum(&:qty)
+        )
+      end.sort_by { |breakdown| -breakdown.amount_money.amount }
     end
 
     def totals_query(account_ids:, date_range:)

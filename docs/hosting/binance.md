@@ -74,6 +74,14 @@ step because a bare asset such as `BTC` must not be substituted with an
 arbitrary fiat pair such as `BTCBRL`. Current holding prices still come from
 Binance and are converted into the family's base currency before import.
 
+Spot, Funding, Earn, Margin and derivative source rows for the same asset are
+summed into one materialized holding inside that Binance account. The source
+rows remain in the encrypted provider payload for diagnostics. At portfolio
+level, the same `CRYPTO:<asset>` held through other institutions is shown once;
+the dashboard disclosure lists each named account and its share. Do not add
+`BINANCE:` to the ticker: the institution is custody metadata, not asset
+identity.
+
 ## Schedule
 
 The native Sidekiq scheduler enqueues every active Binance connection every

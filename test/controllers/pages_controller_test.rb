@@ -14,6 +14,31 @@ class PagesControllerTest < ActionDispatch::IntegrationTest
     assert_response :ok
   end
 
+  test "dashboard aggregates crypto holdings and renders institution breakdown" do
+    @family.update!(currency: "USD")
+    binance = @family.accounts.create!(
+      owner: @user, name: "Binance Dashboard", balance: 1_000_000, cash_balance: 0,
+      currency: "USD", accountable: Crypto.new(subtype: "exchange")
+    )
+    okx = @family.accounts.create!(
+      owner: @user, name: "OKX Dashboard", balance: 500_000, cash_balance: 0,
+      currency: "USD", accountable: Crypto.new(subtype: "exchange")
+    )
+    binance_security = Security.create!(ticker: "CRYPTO:DASHAGG", name: "Dashboard Asset", exchange_operating_mic: "XBNC")
+    okx_security = Security.create!(ticker: "CRYPTO:DASHAGG", name: "Dashboard Asset", exchange_operating_mic: "XOKX")
+    Holding.create!(account: binance, security: binance_security, date: Date.current, qty: 2, price: 500_000, amount: 1_000_000, currency: "USD")
+    Holding.create!(account: okx, security: okx_security, date: Date.current, qty: 1, price: 500_000, amount: 500_000, currency: "USD")
+
+    get root_path
+
+    assert_response :ok
+    assert_select "#investment-summary details[data-portfolio-ticker='CRYPTO:DASHAGG']", count: 1 do
+      assert_select "summary", text: /CRYPTO:DASHAGG/
+      assert_select "span", text: "Binance Dashboard"
+      assert_select "span", text: "OKX Dashboard"
+    end
+  end
+
   test "inactive user's existing session is revoked" do
     session_record = @user.sessions.order(:created_at).last
     @user.update_column(:active, false)

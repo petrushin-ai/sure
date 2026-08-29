@@ -76,11 +76,12 @@ class Security < ApplicationRecord
     kind == "cash"
   end
 
-  # True when this security represents a crypto asset. Today the only signal
-  # is the Binance ISO MIC — when we add a second crypto provider, extend
-  # this check rather than duplicating the test at every call site.
+  # A CRYPTO:<asset> ticker is the provider-neutral identity used by exchange
+  # and on-chain integrations. Legacy Binance market-pair securities predate
+  # that convention, so keep recognizing the Binance MIC as a fallback.
   def crypto?
-    exchange_operating_mic == Provider::BinancePublic::BINANCE_MIC
+    ticker.to_s.start_with?(Provider::BinancePublic::CRYPTO_PREFIX) ||
+      exchange_operating_mic == Provider::BinancePublic::BINANCE_MIC
   end
 
   # Strips the display-currency suffix from a crypto ticker (BTCUSD -> BTC,
@@ -88,6 +89,12 @@ class Security < ApplicationRecord
   # doesn't end in a supported quote.
   def crypto_base_asset
     return nil unless crypto?
+
+    if ticker.to_s.start_with?(Provider::BinancePublic::CRYPTO_PREFIX)
+      base = ticker.to_s.delete_prefix(Provider::BinancePublic::CRYPTO_PREFIX)
+      return base if base.match?(SAFE_CRYPTO_SYMBOL)
+      return nil
+    end
 
     # Delegated rather than parsed here: this stripped a fiat suffix only, so it
     # answered nil for the "CRYPTO:BTC" form the holdings processors store — the

@@ -11,6 +11,7 @@ class OkxAccount::HoldingsProcessor
     assets = okx_account.raw_payload&.dig("assets")
     return if assets.nil?
 
+    assets = aggregate_by_symbol(assets)
     assets.each { |row| process_asset(row) }
     cleanup_stale_holdings!(assets)
   end
@@ -65,7 +66,28 @@ class OkxAccount::HoldingsProcessor
       scope.delete_all
     end
 
-    def external_id(symbol, source)
-      "okx_#{symbol}_#{source}_#{Date.current}"
+    def external_id(symbol, _source = nil)
+      "okx_#{symbol}_combined_#{Date.current}"
+    end
+
+    # Keep one materialized position per asset in the combined account. OKX
+    # source rows remain available in raw_payload for diagnostics, while this
+    # sum prevents Trading/Funding/Earn rows for one asset from overwriting one
+    # another at Holding's composite unique key.
+    def aggregate_by_symbol(assets)
+      assets
+        .select { |row| (row["total"] || row[:total]).to_d.positive? }
+        .group_by { |row| (row["symbol"] || row[:symbol]).to_s.upcase }
+        .filter_map do |symbol, rows|
+          next if symbol.blank?
+
+          prices = rows.filter_map { |row| (row["usd_price"] || row[:usd_price]).presence&.to_d }
+          {
+            "symbol" => symbol,
+            "total" => rows.sum { |row| (row["total"] || row[:total]).to_d }.to_s("F"),
+            "source" => "combined",
+            "usd_price" => prices.first&.to_s("F")
+          }
+        end
     end
 end

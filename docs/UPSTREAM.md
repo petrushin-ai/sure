@@ -197,6 +197,26 @@ image publish. A stale or non-applicable patch is a hard failure.
   input `color-scheme` so the browser picker, field background, text and
   calendar indicator remain legible.
 
+### SURE-011 — Canonical crypto portfolio aggregation
+
+- Source: direct owner request in `#devops`, 2026-08-29.
+- Status: active downstream portfolio correction.
+- Purpose: keep provider-neutral `CRYPTO:<asset>` security identity while
+  displaying one portfolio row per economic crypto asset; sum value and
+  quantity across Binance, OKX and other institutions in family currency;
+  calculate weight against the complete investment portfolio; and expose the
+  exact Sure-account breakdown without encoding an institution into the
+  ticker. Materialize one holding per asset inside each combined Binance/OKX
+  account so Spot, Funding, Earn and other product rows add together instead
+  of overwriting the same `(account, security, date, currency)` holding.
+- Main conflict areas: `Security#crypto?`, `InvestmentStatement` portfolio
+  aggregation, the dashboard investment summary, Binance/OKX holdings
+  processors, and their model/controller tests.
+- Retirement rule: remove only after upstream groups provider-neutral crypto
+  identities across accounts, preserves institution-level drill-down, uses a
+  portfolio-level weight denominator, and materializes every combined exchange
+  account without last-source-wins holding loss.
+
 If upstream absorbs a patch, record the upstream PR and commit here, compare
 behavior and tests, remove only the duplicated downstream implementation, and
 regenerate the patch. Do not silently delete a ledger entry.
@@ -290,8 +310,13 @@ bin/rails test \
   test/models/provider/okx_test.rb \
   test/models/okx_item_test.rb \
   test/models/okx_item/importer_test.rb \
+  test/models/okx_account/holdings_processor_test.rb \
   test/controllers/okx_items_controller_test.rb \
   test/jobs/sync_okx_job_test.rb
+bin/rails test \
+  test/models/security_test.rb \
+  test/models/investment_statement_test.rb \
+  test/controllers/pages_controller_test.rb
 bin/rails test:system TEST=test/system/admin/system_health_test.rb
 bin/rubocop \
   app/models/ai_health.rb \
