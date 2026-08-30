@@ -184,7 +184,7 @@ RSpec.describe 'API V1 Accounts', type: :request do
                 items: { type: :string, pattern: '^\\d{4}$' }
               },
               current_month_spending: { type: :string },
-              reward_miles: { type: :string },
+              reward_miles: { type: :integer, minimum: 0 },
               source_reference: { type: :string, pattern: '^[a-f0-9]{16,64}$' }
             }
           }
@@ -215,7 +215,7 @@ RSpec.describe 'API V1 Accounts', type: :request do
             payment_due_date: '2026-09-22',
             card_last4s: %w[3154 9146],
             current_month_spending: '24265',
-            reward_miles: '9780',
+            reward_miles: 9780,
             source_reference: 'aaaaaaaaaaaaaaaa'
           }
         }

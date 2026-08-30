@@ -3478,7 +3478,8 @@ paths:
                     current_month_spending:
                       type: string
                     reward_miles:
-                      type: string
+                      type: integer
+                      minimum: 0
                     source_reference:
                       type: string
                       pattern: "^[a-f0-9]{16,64}$"

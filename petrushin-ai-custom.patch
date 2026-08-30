@@ -7033,7 +7033,7 @@ index 00000000..409bcefa
 +  verified pre-change backup rather than assuming an image-only rollback is
 +  sufficient.
 diff --git a/docs/api/openapi.yaml b/docs/api/openapi.yaml
-index 913c65ed..b134a0a1 100644
+index 913c65ed..52a93cc1 100644
 --- a/docs/api/openapi.yaml
 +++ b/docs/api/openapi.yaml
 @@ -449,6 +449,19 @@ components:
@@ -7075,7 +7075,7 @@ index 913c65ed..b134a0a1 100644
          available_to_spend:
            type: string
          available_to_spend_cents:
-@@ -3376,6 +3389,100 @@ paths:
+@@ -3376,6 +3389,101 @@ paths:
              application/json:
                schema:
                  "$ref": "#/components/schemas/ErrorResponse"
@@ -7168,7 +7168,8 @@ index 913c65ed..b134a0a1 100644
 +                    current_month_spending:
 +                      type: string
 +                    reward_miles:
-+                      type: string
++                      type: integer
++                      minimum: 0
 +                    source_reference:
 +                      type: string
 +                      pattern: "^[a-f0-9]{16,64}$"
@@ -7176,7 +7177,7 @@ index 913c65ed..b134a0a1 100644
    "/api/v1/auth/signup":
      post:
        summary: Sign up a new user
-@@ -4593,85 +4700,6 @@ paths:
+@@ -4593,85 +4701,6 @@ paths:
              application/json:
                schema:
                  "$ref": "#/components/schemas/ErrorResponse"
@@ -7262,7 +7263,7 @@ index 913c65ed..b134a0a1 100644
    "/api/v1/family_exports":
      get:
        summary: Lists family exports
-@@ -5901,6 +5929,26 @@ paths:
+@@ -5901,6 +5930,26 @@ paths:
                    type: string
                    description: CSV imports only. Column value that marks an amount
                      as an inflow when using custom_column strategy
@@ -7289,7 +7290,7 @@ index 913c65ed..b134a0a1 100644
    "/api/v1/merchants":
      get:
        summary: List merchants
-@@ -6012,6 +6060,65 @@ paths:
+@@ -6012,6 +6061,65 @@ paths:
              application/json:
                schema:
                  "$ref": "#/components/schemas/ErrorResponse"
@@ -7748,7 +7749,7 @@ index 333bcdf4..531bccd1 100644
  available for that date yet. Once market data covers the range, the next sync
  upgrades those entries to trades automatically — they keep their identity, so
 diff --git a/spec/requests/api/v1/accounts_spec.rb b/spec/requests/api/v1/accounts_spec.rb
-index 91686840..3d5c685e 100644
+index 91686840..3a56111a 100644
 --- a/spec/requests/api/v1/accounts_spec.rb
 +++ b/spec/requests/api/v1/accounts_spec.rb
 @@ -151,4 +151,92 @@ RSpec.describe 'API V1 Accounts', type: :request do
@@ -7788,7 +7789,7 @@ index 91686840..3d5c685e 100644
 +                items: { type: :string, pattern: '^\\d{4}$' }
 +              },
 +              current_month_spending: { type: :string },
-+              reward_miles: { type: :string },
++              reward_miles: { type: :integer, minimum: 0 },
 +              source_reference: { type: :string, pattern: '^[a-f0-9]{16,64}$' }
 +            }
 +          }
@@ -7819,7 +7820,7 @@ index 91686840..3d5c685e 100644
 +            payment_due_date: '2026-09-22',
 +            card_last4s: %w[3154 9146],
 +            current_month_spending: '24265',
-+            reward_miles: '9780',
++            reward_miles: 9780,
 +            source_reference: 'aaaaaaaaaaaaaaaa'
 +          }
 +        }
