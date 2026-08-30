@@ -60,6 +60,34 @@ class PagesControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "dashboard renders CD accounts as investments but excludes ordinary savings" do
+    cd = @family.accounts.create!(
+      owner: @user,
+      name: "Dashboard Fixed Deposit",
+      balance: 25_000,
+      cash_balance: 25_000,
+      currency: "USD",
+      accountable: Depository.new(subtype: "cd")
+    )
+    savings = @family.accounts.create!(
+      owner: @user,
+      name: "Dashboard Savings",
+      balance: 50_000,
+      cash_balance: 50_000,
+      currency: "USD",
+      accountable: Depository.new(subtype: "savings")
+    )
+
+    get root_path
+
+    assert_response :ok
+    assert_select "#investment-summary [data-investment-account-id='#{cd.id}']", count: 1 do
+      assert_select "a", text: "Dashboard Fixed Deposit"
+      assert_select "[data-investment-position-value]", text: /\$25,000/
+    end
+    assert_select "#investment-summary [data-investment-account-id='#{savings.id}']", count: 0
+  end
+
   test "inactive user's existing session is revoked" do
     session_record = @user.sessions.order(:created_at).last
     @user.update_column(:active, false)

@@ -147,6 +147,63 @@ class InvestmentStatementTest < ActiveSupport::TestCase
     assert_in_delta 80.06, account_position.weight, 0.01
   end
 
+  test "dashboard includes CDs without changing market investment metrics" do
+    investment = create_investment_account(balance: 1_000, cash_balance: 0)
+    cd = create_depository_account(balance: 500, subtype: "cd", name: "Fixed Deposit")
+    savings = create_depository_account(balance: 5_000, subtype: "savings", name: "Emergency Savings")
+
+    positions = @statement.dashboard_positions(limit: 5)
+    cd_position = positions.find { |position| position.account_position? && position.account == cd }
+
+    assert_equal [ investment.id, cd.id ].sort, @statement.dashboard_accounts.map(&:id).sort
+    assert_not_includes @statement.dashboard_accounts, savings
+    assert_equal 1_000, @statement.portfolio_value
+    assert_equal 1_500, @statement.dashboard_portfolio_value
+    assert_equal 2, positions.size
+    assert_equal 500, cd_position.amount_money.amount
+    assert_in_delta 33.33, cd_position.weight, 0.01
+
+    totals = @statement.totals(period: Period.current_month)
+    assert_equal 0, totals.trades_count
+    assert_equal Money.new(0, "USD"), totals.contributions
+    assert_equal Money.new(0, "USD"), totals.withdrawals
+  end
+
+  test "dashboard converts CD balances to family currency" do
+    create_investment_account(balance: 400, currency: "USD")
+    cd = create_depository_account(balance: 1_000, currency: "EUR", subtype: "cd")
+    ExchangeRate.create!(
+      from_currency: "EUR",
+      to_currency: "USD",
+      date: Date.current,
+      rate: 1.1
+    )
+
+    position = @statement.dashboard_positions(limit: 5)
+      .find { |candidate| candidate.account_position? && candidate.account == cd }
+
+    assert_in_delta 1_500, @statement.dashboard_portfolio_value, 0.001
+    assert_in_delta 1_100, position.amount_money.amount, 0.001
+    assert_in_delta 73.33, position.weight, 0.01
+  end
+
+  test "dashboard respects CD report and per-user finance visibility" do
+    shared_user = users(:new_email)
+    included_cd = create_depository_account(balance: 500, subtype: "cd", name: "Included CD")
+    excluded_cd = create_depository_account(balance: 700, subtype: "cd", name: "Excluded CD")
+    included_cd.share_with!(shared_user, permission: "read_only", include_in_finances: true)
+    excluded_cd.share_with!(shared_user, permission: "read_only", include_in_finances: false)
+
+    statement = InvestmentStatement.new(@family, user: shared_user)
+
+    assert_equal [ included_cd ], statement.dashboard_accounts
+
+    included_cd.update!(exclude_from_reports: true)
+    refreshed_statement = InvestmentStatement.new(@family, user: shared_user)
+
+    assert_empty refreshed_statement.dashboard_accounts
+  end
+
   test "dashboard_positions does not duplicate an Investment account that has holdings" do
     account = create_investment_account(balance: 1_000, cash_balance: 0)
     security = Security.create!(ticker: "TESTDASH", name: "Dashboard Security")
@@ -382,6 +439,16 @@ class InvestmentStatementTest < ActiveSupport::TestCase
         cash_balance: cash_balance,
         currency: currency,
         accountable: Investment.new
+      )
+    end
+
+    def create_depository_account(balance:, subtype:, currency: "USD", name: nil)
+      @family.accounts.create!(
+        name: name || "Depository #{SecureRandom.hex(3)}",
+        balance: balance,
+        cash_balance: balance,
+        currency: currency,
+        accountable: Depository.new(subtype: subtype)
       )
     end
 

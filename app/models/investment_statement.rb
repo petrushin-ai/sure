@@ -43,6 +43,22 @@ class InvestmentStatement
     Money.new(portfolio_value, family.currency)
   end
 
+  # The dashboard groups market investments and fixed-term bank deposits in
+  # one Investments card.  CDs remain Depository accounts everywhere else so
+  # banking imports, cashflow semantics, and account editing keep their native
+  # behavior; only the dashboard presentation treats them as investable assets.
+  def dashboard_accounts
+    @dashboard_accounts ||= (investment_accounts.to_a + certificate_of_deposit_accounts.to_a).uniq(&:id)
+  end
+
+  def dashboard_portfolio_value
+    dashboard_accounts.sum { |account| convert_to_family_currency(account.balance, account.currency) }
+  end
+
+  def dashboard_portfolio_value_money
+    Money.new(dashboard_portfolio_value, family.currency)
+  end
+
   # Total cash in investment accounts
   def cash_balance
     investment_accounts.sum { |a| convert_to_family_currency(a.cash_balance, a.currency) }
@@ -291,7 +307,7 @@ class InvestmentStatement
     # accounts and their holdings. Mirrors BalanceSheet::AccountTotals#exchange_rates.
     def exchange_rates
       @exchange_rates ||= begin
-        account_currencies = investment_accounts.map(&:currency)
+        account_currencies = dashboard_accounts.map(&:currency)
         holding_currencies = Holding.where(account_id: investment_account_ids).distinct.pluck(:currency)
         foreign = (account_currencies + holding_currencies)
                     .compact
@@ -377,17 +393,31 @@ class InvestmentStatement
 
     def dashboard_portfolio_positions
       @dashboard_portfolio_positions ||= begin
-        positions = portfolio_holdings + balance_only_account_positions
+        portfolio_total = dashboard_portfolio_value
+        positions = dashboard_security_positions(portfolio_total:) + balance_only_account_positions(portfolio_total:)
         positions.sort_by { |position| -position.amount_money.amount }
       end
     end
 
-    def balance_only_account_positions
-      holding_account_ids = current_holdings.to_a.map(&:account_id).to_set
-      portfolio_total = portfolio_value
+    def dashboard_security_positions(portfolio_total:)
+      portfolio_holdings.map do |holding|
+        PortfolioHolding.new(
+          security: holding.security,
+          amount_money: holding.amount_money,
+          weight: portfolio_total.zero? ? 0 : (holding.amount_money.amount / portfolio_total * 100).round(2),
+          trend: holding.trend,
+          quantity: holding.quantity,
+          breakdowns: holding.breakdowns
+        )
+      end
+    end
 
-      investment_accounts.filter_map do |account|
-        next unless account.accountable_type == "Investment"
+    def balance_only_account_positions(portfolio_total:)
+      holding_account_ids = current_holdings.to_a.map(&:account_id).to_set
+      balance_only_accounts = investment_accounts.select { |account| account.accountable_type == "Investment" }
+      balance_only_accounts.concat(certificate_of_deposit_accounts.to_a)
+
+      balance_only_accounts.uniq(&:id).filter_map do |account|
         next if holding_account_ids.include?(account.id)
 
         amount = convert_to_family_currency(account.balance, account.currency)
@@ -398,6 +428,20 @@ class InvestmentStatement
           amount_money: Money.new(amount, family.currency),
           weight: portfolio_total.zero? ? 0 : (amount / portfolio_total * 100).round(2)
         )
+      end
+    end
+
+    def certificate_of_deposit_accounts
+      @certificate_of_deposit_accounts ||= begin
+        scope = family.accounts.visible.included_in_reports
+          .joins(<<~SQL.squish)
+            INNER JOIN depositories
+              ON depositories.id = accounts.accountable_id
+              AND accounts.accountable_type = 'Depository'
+          SQL
+          .where(depositories: { subtype: "cd" })
+        scope = scope.included_in_finances_for(user) if user
+        scope
       end
     end
 

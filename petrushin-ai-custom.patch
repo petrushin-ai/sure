@@ -346,6 +346,19 @@ index c5821fcd..2ec1b17a 100644
        permitted
      end
  
+diff --git a/app/controllers/pages_controller.rb b/app/controllers/pages_controller.rb
+index 6a8f62d6..949d1da0 100644
+--- a/app/controllers/pages_controller.rb
++++ b/app/controllers/pages_controller.rb
+@@ -180,7 +180,7 @@ class PagesController < ApplicationController
+           partial: "pages/dashboard/investment_summary",
+           layout: section_layout("investment_summary"),
+           locals: { investment_statement: @investment_statement, period: @period },
+-          visible: @accounts.any? && @investment_statement.investment_accounts.any?,
++          visible: @accounts.any? && @investment_statement.dashboard_accounts.any?,
+           collapsible: true
+         },
+         {
 diff --git a/app/controllers/settings/providers_controller.rb b/app/controllers/settings/providers_controller.rb
 index 71e93f75..7c285691 100644
 --- a/app/controllers/settings/providers_controller.rb
@@ -1657,10 +1670,33 @@ index 00000000..84b704cb
 +  end
 +end
 diff --git a/app/models/investment_statement.rb b/app/models/investment_statement.rb
-index 66c8d581..9cf54b29 100644
+index 66c8d581..bfa8b940 100644
 --- a/app/models/investment_statement.rb
 +++ b/app/models/investment_statement.rb
-@@ -90,34 +90,55 @@ class InvestmentStatement
+@@ -43,6 +43,22 @@ class InvestmentStatement
+     Money.new(portfolio_value, family.currency)
+   end
+ 
++  # The dashboard groups market investments and fixed-term bank deposits in
++  # one Investments card.  CDs remain Depository accounts everywhere else so
++  # banking imports, cashflow semantics, and account editing keep their native
++  # behavior; only the dashboard presentation treats them as investable assets.
++  def dashboard_accounts
++    @dashboard_accounts ||= (investment_accounts.to_a + certificate_of_deposit_accounts.to_a).uniq(&:id)
++  end
++
++  def dashboard_portfolio_value
++    dashboard_accounts.sum { |account| convert_to_family_currency(account.balance, account.currency) }
++  end
++
++  def dashboard_portfolio_value_money
++    Money.new(dashboard_portfolio_value, family.currency)
++  end
++
+   # Total cash in investment accounts
+   def cash_balance
+     investment_accounts.sum { |a| convert_to_family_currency(a.cash_balance, a.currency) }
+@@ -90,34 +106,55 @@ class InvestmentStatement
      end
    end
  
@@ -1736,7 +1772,16 @@ index 66c8d581..9cf54b29 100644
    end
  
    # Unrealized gains across all holdings, summed in family currency
-@@ -309,10 +330,127 @@ class InvestmentStatement
+@@ -270,7 +307,7 @@ class InvestmentStatement
+     # accounts and their holdings. Mirrors BalanceSheet::AccountTotals#exchange_rates.
+     def exchange_rates
+       @exchange_rates ||= begin
+-        account_currencies = investment_accounts.map(&:currency)
++        account_currencies = dashboard_accounts.map(&:currency)
+         holding_currencies = Holding.where(account_id: investment_account_ids).distinct.pluck(:currency)
+         foreign = (account_currencies + holding_currencies)
+                     .compact
+@@ -309,10 +346,155 @@ class InvestmentStatement
  
      HoldingAllocation = Data.define(:security, :amount, :weight, :trend)
  
@@ -1787,17 +1832,31 @@ index 66c8d581..9cf54b29 100644
 +
 +    def dashboard_portfolio_positions
 +      @dashboard_portfolio_positions ||= begin
-+        positions = portfolio_holdings + balance_only_account_positions
++        portfolio_total = dashboard_portfolio_value
++        positions = dashboard_security_positions(portfolio_total:) + balance_only_account_positions(portfolio_total:)
 +        positions.sort_by { |position| -position.amount_money.amount }
 +      end
 +    end
 +
-+    def balance_only_account_positions
-+      holding_account_ids = current_holdings.to_a.map(&:account_id).to_set
-+      portfolio_total = portfolio_value
++    def dashboard_security_positions(portfolio_total:)
++      portfolio_holdings.map do |holding|
++        PortfolioHolding.new(
++          security: holding.security,
++          amount_money: holding.amount_money,
++          weight: portfolio_total.zero? ? 0 : (holding.amount_money.amount / portfolio_total * 100).round(2),
++          trend: holding.trend,
++          quantity: holding.quantity,
++          breakdowns: holding.breakdowns
++        )
++      end
++    end
 +
-+      investment_accounts.filter_map do |account|
-+        next unless account.accountable_type == "Investment"
++    def balance_only_account_positions(portfolio_total:)
++      holding_account_ids = current_holdings.to_a.map(&:account_id).to_set
++      balance_only_accounts = investment_accounts.select { |account| account.accountable_type == "Investment" }
++      balance_only_accounts.concat(certificate_of_deposit_accounts.to_a)
++
++      balance_only_accounts.uniq(&:id).filter_map do |account|
 +        next if holding_account_ids.include?(account.id)
 +
 +        amount = convert_to_family_currency(account.balance, account.currency)
@@ -1808,6 +1867,20 @@ index 66c8d581..9cf54b29 100644
 +          amount_money: Money.new(amount, family.currency),
 +          weight: portfolio_total.zero? ? 0 : (amount / portfolio_total * 100).round(2)
 +        )
++      end
++    end
++
++    def certificate_of_deposit_accounts
++      @certificate_of_deposit_accounts ||= begin
++        scope = family.accounts.visible.included_in_reports
++          .joins(<<~SQL.squish)
++            INNER JOIN depositories
++              ON depositories.id = accounts.accountable_id
++              AND accounts.accountable_type = 'Depository'
++          SQL
++          .where(depositories: { subtype: "cd" })
++        scope = scope.included_in_finances_for(user) if user
++        scope
 +      end
 +    end
 +
@@ -4978,9 +5051,26 @@ index 00000000..58bc5166
 +  </div>
 +</div>
 diff --git a/app/views/pages/dashboard/_investment_summary.html.erb b/app/views/pages/dashboard/_investment_summary.html.erb
-index b38c2f90..be3dec80 100644
+index b38c2f90..1f305782 100644
 --- a/app/views/pages/dashboard/_investment_summary.html.erb
 +++ b/app/views/pages/dashboard/_investment_summary.html.erb
+@@ -1,6 +1,6 @@
+ <%# locals: (investment_statement:, period:, **args) %>
+ 
+-<% if investment_statement.investment_accounts.any? %>
++<% if investment_statement.dashboard_accounts.any? %>
+   <div id="investment-summary" class="space-y-4">
+     <div class="flex justify-between gap-4 px-4">
+       <div class="space-y-2">
+@@ -9,7 +9,7 @@
+         </div>
+ 
+         <p class="text-primary text-3xl font-medium privacy-sensitive">
+-          <%= format_money(investment_statement.portfolio_value_money) %>
++          <%= format_money(investment_statement.dashboard_portfolio_value_money) %>
+         </p>
+ 
+         <% trend = investment_statement.unrealized_gains_trend %>
 @@ -25,59 +25,56 @@
        </div>
      </div>
@@ -6278,10 +6368,10 @@ index 40f62952..c7a14d5c 100644
    add_foreign_key "plaid_accounts", "plaid_items"
 diff --git a/docs/UPSTREAM.md b/docs/UPSTREAM.md
 new file mode 100644
-index 00000000..f3ec1362
+index 00000000..5840b71a
 --- /dev/null
 +++ b/docs/UPSTREAM.md
-@@ -0,0 +1,406 @@
+@@ -0,0 +1,423 @@
 +# Maintaining the Petrushin AI Sure fork
 +
 +This repository is a native GitHub fork of [`we-promise/sure`](https://github.com/we-promise/sure).
@@ -6535,6 +6625,23 @@ index 00000000..f3ec1362
 +  address safety, native GRAM and Jetton identity/history semantics, optional
 +  TON Center credentials and bounded queries, TON-to-GRAM price continuity,
 +  schema guarantees and regression coverage.
++
++### SURE-013 — Bank certificates of deposit in the dashboard Investments card
++
++- Source: direct owner request in Slack DM `1788109375.042959`, 2026-08-31.
++- Status: active downstream product behavior.
++- Purpose: keep fixed-term bank deposits modelled as `Depository` accounts with
++  subtype `cd`, while including them in the dashboard Investments card total,
++  allocation weights and linked position rows. Ordinary checking and savings
++  accounts remain excluded. Market holdings, trades, contributions,
++  withdrawals and return calculations remain scoped to `Investment` and
++  `Crypto`, so a deposit balance is not misreported as a security holding or
++  unrealized gain.
++- Main conflict areas: `InvestmentStatement`, the dashboard Investments
++  section visibility and partial, plus model/controller regression tests.
++- Retirement rule: remove only after upstream includes `Depository/cd` assets
++  in the dashboard investment summary without reclassifying the accounts or
++  contaminating market-investment performance metrics.
 +
 +If upstream absorbs a patch, record the upstream PR and commit here, compare
 +behavior and tests, remove only the duplicated downstream implementation, and
@@ -7360,10 +7467,10 @@ index 587938ed..07b80330 100644
      item = create_onchain_wallet_item(family: @family)
  
 diff --git a/test/controllers/pages_controller_test.rb b/test/controllers/pages_controller_test.rb
-index 757cf922..a7eef03c 100644
+index 757cf922..f49e9cd9 100644
 --- a/test/controllers/pages_controller_test.rb
 +++ b/test/controllers/pages_controller_test.rb
-@@ -14,6 +14,52 @@ class PagesControllerTest < ActionDispatch::IntegrationTest
+@@ -14,6 +14,80 @@ class PagesControllerTest < ActionDispatch::IntegrationTest
      assert_response :ok
    end
  
@@ -7411,6 +7518,34 @@ index 757cf922..a7eef03c 100644
 +      assert_select "a", text: "Edge Capital Dashboard"
 +      assert_select "[data-investment-position-value]", text: /\$40,150/
 +    end
++  end
++
++  test "dashboard renders CD accounts as investments but excludes ordinary savings" do
++    cd = @family.accounts.create!(
++      owner: @user,
++      name: "Dashboard Fixed Deposit",
++      balance: 25_000,
++      cash_balance: 25_000,
++      currency: "USD",
++      accountable: Depository.new(subtype: "cd")
++    )
++    savings = @family.accounts.create!(
++      owner: @user,
++      name: "Dashboard Savings",
++      balance: 50_000,
++      cash_balance: 50_000,
++      currency: "USD",
++      accountable: Depository.new(subtype: "savings")
++    )
++
++    get root_path
++
++    assert_response :ok
++    assert_select "#investment-summary [data-investment-account-id='#{cd.id}']", count: 1 do
++      assert_select "a", text: "Dashboard Fixed Deposit"
++      assert_select "[data-investment-position-value]", text: /\$25,000/
++    end
++    assert_select "#investment-summary [data-investment-account-id='#{savings.id}']", count: 0
 +  end
 +
    test "inactive user's existing session is revoked" do
@@ -8304,10 +8439,10 @@ index c9a03bf3..7cde1d6d 100644
      assert_equal I18n.t("binance_items.binance_item.sync_status.no_accounts"), @item.sync_status_summary
    end
 diff --git a/test/models/investment_statement_test.rb b/test/models/investment_statement_test.rb
-index 232eecc7..905cced4 100644
+index 232eecc7..464120e8 100644
 --- a/test/models/investment_statement_test.rb
 +++ b/test/models/investment_statement_test.rb
-@@ -87,6 +87,80 @@ class InvestmentStatementTest < ActiveSupport::TestCase
+@@ -87,6 +87,137 @@ class InvestmentStatementTest < ActiveSupport::TestCase
      assert_equal %w[ASML AAPL], top.map(&:ticker)
    end
  
@@ -8371,6 +8506,63 @@ index 232eecc7..905cced4 100644
 +    assert_in_delta 80.06, account_position.weight, 0.01
 +  end
 +
++  test "dashboard includes CDs without changing market investment metrics" do
++    investment = create_investment_account(balance: 1_000, cash_balance: 0)
++    cd = create_depository_account(balance: 500, subtype: "cd", name: "Fixed Deposit")
++    savings = create_depository_account(balance: 5_000, subtype: "savings", name: "Emergency Savings")
++
++    positions = @statement.dashboard_positions(limit: 5)
++    cd_position = positions.find { |position| position.account_position? && position.account == cd }
++
++    assert_equal [ investment.id, cd.id ].sort, @statement.dashboard_accounts.map(&:id).sort
++    assert_not_includes @statement.dashboard_accounts, savings
++    assert_equal 1_000, @statement.portfolio_value
++    assert_equal 1_500, @statement.dashboard_portfolio_value
++    assert_equal 2, positions.size
++    assert_equal 500, cd_position.amount_money.amount
++    assert_in_delta 33.33, cd_position.weight, 0.01
++
++    totals = @statement.totals(period: Period.current_month)
++    assert_equal 0, totals.trades_count
++    assert_equal Money.new(0, "USD"), totals.contributions
++    assert_equal Money.new(0, "USD"), totals.withdrawals
++  end
++
++  test "dashboard converts CD balances to family currency" do
++    create_investment_account(balance: 400, currency: "USD")
++    cd = create_depository_account(balance: 1_000, currency: "EUR", subtype: "cd")
++    ExchangeRate.create!(
++      from_currency: "EUR",
++      to_currency: "USD",
++      date: Date.current,
++      rate: 1.1
++    )
++
++    position = @statement.dashboard_positions(limit: 5)
++      .find { |candidate| candidate.account_position? && candidate.account == cd }
++
++    assert_in_delta 1_500, @statement.dashboard_portfolio_value, 0.001
++    assert_in_delta 1_100, position.amount_money.amount, 0.001
++    assert_in_delta 73.33, position.weight, 0.01
++  end
++
++  test "dashboard respects CD report and per-user finance visibility" do
++    shared_user = users(:new_email)
++    included_cd = create_depository_account(balance: 500, subtype: "cd", name: "Included CD")
++    excluded_cd = create_depository_account(balance: 700, subtype: "cd", name: "Excluded CD")
++    included_cd.share_with!(shared_user, permission: "read_only", include_in_finances: true)
++    excluded_cd.share_with!(shared_user, permission: "read_only", include_in_finances: false)
++
++    statement = InvestmentStatement.new(@family, user: shared_user)
++
++    assert_equal [ included_cd ], statement.dashboard_accounts
++
++    included_cd.update!(exclude_from_reports: true)
++    refreshed_statement = InvestmentStatement.new(@family, user: shared_user)
++
++    assert_empty refreshed_statement.dashboard_accounts
++  end
++
 +  test "dashboard_positions does not duplicate an Investment account that has holdings" do
 +    account = create_investment_account(balance: 1_000, cash_balance: 0)
 +    security = Security.create!(ticker: "TESTDASH", name: "Dashboard Security")
@@ -8388,6 +8580,23 @@ index 232eecc7..905cced4 100644
    test "allocation weights sum to 100% with mixed currencies" do
      usd_account = create_investment_account(balance: 2100, currency: "USD")
      eur_account = create_investment_account(balance: 2000, currency: "EUR")
+@@ -311,6 +442,16 @@ class InvestmentStatementTest < ActiveSupport::TestCase
+       )
+     end
+ 
++    def create_depository_account(balance:, subtype:, currency: "USD", name: nil)
++      @family.accounts.create!(
++        name: name || "Depository #{SecureRandom.hex(3)}",
++        balance: balance,
++        cash_balance: balance,
++        currency: currency,
++        accountable: Depository.new(subtype: subtype)
++      )
++    end
++
+     def create_trade(account:, qty:, amount:, date:)
+       account.entries.create!(
+         name: "Trade #{SecureRandom.hex(3)}",
 diff --git a/test/models/okx_account/holdings_processor_test.rb b/test/models/okx_account/holdings_processor_test.rb
 new file mode 100644
 index 00000000..145b7941

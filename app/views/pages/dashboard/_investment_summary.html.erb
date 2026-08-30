@@ -1,6 +1,6 @@
 <%# locals: (investment_statement:, period:, **args) %>
 
-<% if investment_statement.investment_accounts.any? %>
+<% if investment_statement.dashboard_accounts.any? %>
   <div id="investment-summary" class="space-y-4">
     <div class="flex justify-between gap-4 px-4">
       <div class="space-y-2">
@@ -9,7 +9,7 @@
         </div>
 
         <p class="text-primary text-3xl font-medium privacy-sensitive">
-          <%= format_money(investment_statement.portfolio_value_money) %>
+          <%= format_money(investment_statement.dashboard_portfolio_value_money) %>
         </p>
 
         <% trend = investment_statement.unrealized_gains_trend %>

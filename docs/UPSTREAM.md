@@ -252,6 +252,23 @@ image publish. A stale or non-applicable patch is a hard failure.
   TON Center credentials and bounded queries, TON-to-GRAM price continuity,
   schema guarantees and regression coverage.
 
+### SURE-013 — Bank certificates of deposit in the dashboard Investments card
+
+- Source: direct owner request in Slack DM `1788109375.042959`, 2026-08-31.
+- Status: active downstream product behavior.
+- Purpose: keep fixed-term bank deposits modelled as `Depository` accounts with
+  subtype `cd`, while including them in the dashboard Investments card total,
+  allocation weights and linked position rows. Ordinary checking and savings
+  accounts remain excluded. Market holdings, trades, contributions,
+  withdrawals and return calculations remain scoped to `Investment` and
+  `Crypto`, so a deposit balance is not misreported as a security holding or
+  unrealized gain.
+- Main conflict areas: `InvestmentStatement`, the dashboard Investments
+  section visibility and partial, plus model/controller regression tests.
+- Retirement rule: remove only after upstream includes `Depository/cd` assets
+  in the dashboard investment summary without reclassifying the accounts or
+  contaminating market-investment performance metrics.
+
 If upstream absorbs a patch, record the upstream PR and commit here, compare
 behavior and tests, remove only the duplicated downstream implementation, and
 regenerate the patch. Do not silently delete a ledger entry.
