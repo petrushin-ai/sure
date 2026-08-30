@@ -130,7 +130,7 @@ index ad339581..782bcbda 100644
        @questrade_sync_stats_map = {}
        @questrade_account_counts_map = {}
 diff --git a/app/controllers/api/v1/accounts_controller.rb b/app/controllers/api/v1/accounts_controller.rb
-index 8b03a5f1..7b96ea4b 100644
+index 8b03a5f1..38672966 100644
 --- a/app/controllers/api/v1/accounts_controller.rb
 +++ b/app/controllers/api/v1/accounts_controller.rb
 @@ -3,8 +3,8 @@
@@ -242,7 +242,7 @@ index 8b03a5f1..7b96ea4b 100644
 +      raise ArgumentError unless card_last4s.size.between?(1, 10)
 +      raise ArgumentError unless card_last4s.all? { |value| value.match?(/\A\d{4}\z/) }
 +
-+      reward_miles = Integer(raw.fetch(:reward_miles), 10)
++      reward_miles = Integer(raw.fetch(:reward_miles).to_s, 10)
 +      raise ArgumentError if reward_miles.negative?
 +      source_reference = raw.fetch(:source_reference).to_s
 +      raise ArgumentError unless source_reference.match?(/\A[a-f0-9]{16,64}\z/)
@@ -6577,10 +6577,10 @@ index 40f62952..c7a14d5c 100644
    add_foreign_key "plaid_accounts", "plaid_items"
 diff --git a/docs/UPSTREAM.md b/docs/UPSTREAM.md
 new file mode 100644
-index 00000000..7f74afdb
+index 00000000..409bcefa
 --- /dev/null
 +++ b/docs/UPSTREAM.md
-@@ -0,0 +1,450 @@
+@@ -0,0 +1,451 @@
 +# Maintaining the Petrushin AI Sure fork
 +
 +This repository is a native GitHub fork of [`we-promise/sure`](https://github.com/we-promise/sure).
@@ -6861,7 +6861,8 @@ index 00000000..7f74afdb
 +  reconciled Sure balance matches the visible total debt. The endpoint accepts
 +  exact credit limit, available credit, minimum payment, grace-period payment,
 +  due date, visible card suffixes, current-month spending, reward miles, and a
-+  non-secret source reference. It updates the native available-credit and
++  non-secret source reference. Reward miles use a JSON integer on the wire. It
++  updates the native available-credit and
 +  minimum-payment fields and replaces one bounded managed notes block while
 +  preserving unrelated user notes. Read-only API keys, other families,
 +  non-credit accounts, mismatched debt, malformed values, and unsupported
@@ -7954,7 +7955,7 @@ index 5af9070d..f1b5e0a9 100644
      with_ai_environment(
        "OPENAI_ACCESS_TOKEN" => "sk-secret-openai",
 diff --git a/test/controllers/api/v1/accounts_controller_test.rb b/test/controllers/api/v1/accounts_controller_test.rb
-index 65e1715c..0b531264 100644
+index 65e1715c..d3452d28 100644
 --- a/test/controllers/api/v1/accounts_controller_test.rb
 +++ b/test/controllers/api/v1/accounts_controller_test.rb
 @@ -16,6 +16,13 @@ class Api::V1::AccountsControllerTest < ActionDispatch::IntegrationTest
@@ -8096,7 +8097,7 @@ index 65e1715c..0b531264 100644
 +        payment_due_date: "2026-09-22",
 +        card_last4s: %w[9146 3154],
 +        current_month_spending: "24265",
-+        reward_miles: "9780",
++        reward_miles: 9780,
 +        source_reference: "a" * 16
 +      }
 +    end

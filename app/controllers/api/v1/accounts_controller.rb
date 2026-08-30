@@ -147,7 +147,7 @@ class Api::V1::AccountsController < Api::V1::BaseController
       raise ArgumentError unless card_last4s.size.between?(1, 10)
       raise ArgumentError unless card_last4s.all? { |value| value.match?(/\A\d{4}\z/) }
 
-      reward_miles = Integer(raw.fetch(:reward_miles), 10)
+      reward_miles = Integer(raw.fetch(:reward_miles).to_s, 10)
       raise ArgumentError if reward_miles.negative?
       source_reference = raw.fetch(:source_reference).to_s
       raise ArgumentError unless source_reference.match?(/\A[a-f0-9]{16,64}\z/)

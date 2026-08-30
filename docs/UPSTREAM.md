@@ -278,7 +278,8 @@ image publish. A stale or non-applicable patch is a hard failure.
   reconciled Sure balance matches the visible total debt. The endpoint accepts
   exact credit limit, available credit, minimum payment, grace-period payment,
   due date, visible card suffixes, current-month spending, reward miles, and a
-  non-secret source reference. It updates the native available-credit and
+  non-secret source reference. Reward miles use a JSON integer on the wire. It
+  updates the native available-credit and
   minimum-payment fields and replaces one bounded managed notes block while
   preserving unrelated user notes. Read-only API keys, other families,
   non-credit accounts, mismatched debt, malformed values, and unsupported

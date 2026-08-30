@@ -430,7 +430,7 @@ class Api::V1::AccountsControllerTest < ActionDispatch::IntegrationTest
         payment_due_date: "2026-09-22",
         card_last4s: %w[9146 3154],
         current_month_spending: "24265",
-        reward_miles: "9780",
+        reward_miles: 9780,
         source_reference: "a" * 16
       }
     end
