@@ -290,6 +290,15 @@ RSpec.configure do |config|
               status: { type: :string, enum: %w[active draft disabled pending_deletion] },
               institution_name: { type: :string, nullable: true },
               institution_domain: { type: :string, nullable: true },
+              notes: { type: :string, nullable: true },
+              credit_card: {
+                type: :object,
+                nullable: true,
+                properties: {
+                  available_credit: { type: :string, nullable: true },
+                  minimum_payment: { type: :string, nullable: true }
+                }
+              },
               created_at: { type: :string, format: :'date-time' },
               updated_at: { type: :string, format: :'date-time' }
             }

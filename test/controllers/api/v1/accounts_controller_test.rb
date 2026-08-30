@@ -16,6 +16,13 @@ class Api::V1::AccountsControllerTest < ActionDispatch::IntegrationTest
       source: "web",
       display_key: "test_read_#{SecureRandom.hex(8)}"
     )
+    @write_key = ApiKey.create!(
+      user: @user,
+      name: "Test Read Write Key",
+      scopes: [ "read_write" ],
+      source: "web",
+      display_key: "test_read_write_#{SecureRandom.hex(8)}"
+    )
 
     @other_family_user.api_keys.active.destroy_all
     @other_family_api_key = ApiKey.create!(
@@ -24,6 +31,13 @@ class Api::V1::AccountsControllerTest < ActionDispatch::IntegrationTest
       scopes: [ "read" ],
       source: "web",
       display_key: "other_family_read_#{SecureRandom.hex(8)}"
+    )
+    @other_family_write_key = ApiKey.create!(
+      user: @other_family_user,
+      name: "Other Family Read Write Key",
+      scopes: [ "read_write" ],
+      source: "web",
+      display_key: "other_family_read_write_#{SecureRandom.hex(8)}"
     )
   end
 
@@ -227,6 +241,93 @@ class Api::V1::AccountsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "should update a reviewed T-Bank credit card snapshot" do
+    account = accounts(:credit_card)
+    account.update!(currency: "RUB", balance: 120_569, notes: "Keep this note")
+
+    patch "/api/v1/accounts/#{account.id}/credit_card_snapshot",
+          params: { credit_card_snapshot: tbank_credit_card_snapshot },
+          headers: api_headers(@write_key)
+
+    assert_response :success
+    response_body = JSON.parse(response.body)
+    assert_equal "519667.35", response_body.dig("credit_card", "available_credit")
+    assert_equal "7000.0", response_body.dig("credit_card", "minimum_payment")
+    assert_includes response_body["notes"], "Keep this note"
+    assert_includes response_body["notes"], "Credit limit: 640000.0 RUB"
+    assert_includes response_body["notes"], "Total debt: 120569.0 RUB"
+    assert_includes response_body["notes"], "Payment due date: 2026-09-22"
+    assert_includes response_body["notes"], "Cards: ·3154, ·9146"
+
+    account.reload
+    assert_equal BigDecimal("519667.35"), account.credit_card.available_credit
+    assert_equal BigDecimal("7000"), account.credit_card.minimum_payment
+    assert_equal 1, account.notes.scan("[family-connectors:tbank-credit-snapshot]").size
+
+    patch "/api/v1/accounts/#{account.id}/credit_card_snapshot",
+          params: { credit_card_snapshot: tbank_credit_card_snapshot },
+          headers: api_headers(@write_key)
+
+    assert_response :success
+    assert_equal 1, account.reload.notes.scan("[family-connectors:tbank-credit-snapshot]").size
+  end
+
+  test "should require write scope for a credit card snapshot" do
+    account = accounts(:credit_card)
+    account.update!(currency: "RUB", balance: 120_569)
+
+    patch "/api/v1/accounts/#{account.id}/credit_card_snapshot",
+          params: { credit_card_snapshot: tbank_credit_card_snapshot },
+          headers: api_headers(@api_key)
+
+    assert_response :forbidden
+  end
+
+  test "should require authentication for a credit card snapshot" do
+    account = accounts(:credit_card)
+
+    patch "/api/v1/accounts/#{account.id}/credit_card_snapshot",
+          params: { credit_card_snapshot: tbank_credit_card_snapshot }
+
+    assert_response :unauthorized
+  end
+
+  test "should not update another family's credit card" do
+    account = accounts(:credit_card)
+    account.update!(currency: "RUB", balance: 120_569)
+    previous_available_credit = account.credit_card.available_credit
+
+    patch "/api/v1/accounts/#{account.id}/credit_card_snapshot",
+          params: { credit_card_snapshot: tbank_credit_card_snapshot },
+          headers: api_headers(@other_family_write_key)
+
+    assert_response :not_found
+    assert_equal previous_available_credit, account.reload.credit_card.available_credit
+  end
+
+  test "should reject a snapshot for a non-credit account" do
+    account = accounts(:depository)
+
+    patch "/api/v1/accounts/#{account.id}/credit_card_snapshot",
+          params: { credit_card_snapshot: tbank_credit_card_snapshot },
+          headers: api_headers(@write_key)
+
+    assert_response :unprocessable_entity
+    assert_equal "validation_failed", JSON.parse(response.body)["error"]
+  end
+
+  test "should reject a credit snapshot whose debt does not match the account" do
+    account = accounts(:credit_card)
+    account.update!(currency: "RUB", balance: 1)
+
+    patch "/api/v1/accounts/#{account.id}/credit_card_snapshot",
+          params: { credit_card_snapshot: tbank_credit_card_snapshot },
+          headers: api_headers(@write_key)
+
+    assert_response :unprocessable_entity
+    assert_equal "Credit card balance does not match total debt", JSON.parse(response.body)["message"]
+  end
+
   test "should not return other family's accounts" do
     get "/api/v1/accounts", params: {}, headers: api_headers(@other_family_api_key)
 
@@ -315,5 +416,22 @@ class Api::V1::AccountsControllerTest < ActionDispatch::IntegrationTest
 
     def assert_nullable_equal(expected, actual)
       expected.nil? ? assert_nil(actual) : assert_equal(expected, actual)
+    end
+
+    def tbank_credit_card_snapshot
+      {
+        provider: "tbank",
+        snapshot_date: "2026-08-31",
+        credit_limit: "640000",
+        total_debt: "120569",
+        available_credit: "519667.35",
+        minimum_payment: "7000",
+        grace_period_payment: "120332.65",
+        payment_due_date: "2026-09-22",
+        card_last4s: %w[9146 3154],
+        current_month_spending: "24265",
+        reward_miles: "9780",
+        source_reference: "a" * 16
+      }
     end
 end

@@ -654,7 +654,9 @@ Rails.application.routes.draw do
       patch "auth/enable_ai", to: "auth#enable_ai"
 
       # Production API endpoints
-      resources :accounts, only: [ :index, :show ]
+      resources :accounts, only: [ :index, :show ] do
+        patch :credit_card_snapshot, on: :member
+      end
       resources :balances, only: [ :index, :show ]
       resources :budgets, only: [ :index, :show ]
       resources :budget_categories, only: [ :index, :show ]

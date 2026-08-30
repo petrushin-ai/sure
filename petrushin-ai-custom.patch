@@ -129,6 +129,187 @@ index ad339581..782bcbda 100644
        # Questrade sync stats and account counts
        @questrade_sync_stats_map = {}
        @questrade_account_counts_map = {}
+diff --git a/app/controllers/api/v1/accounts_controller.rb b/app/controllers/api/v1/accounts_controller.rb
+index 8b03a5f1..7b96ea4b 100644
+--- a/app/controllers/api/v1/accounts_controller.rb
++++ b/app/controllers/api/v1/accounts_controller.rb
+@@ -3,8 +3,8 @@
+ class Api::V1::AccountsController < Api::V1::BaseController
+   include Pagy::Backend
+ 
+-  # Ensure proper scope authorization for read access
+-  before_action :ensure_read_scope
++  before_action :ensure_read_scope, only: [ :index, :show ]
++  before_action :ensure_write_scope, only: :credit_card_snapshot
+ 
+   def index
+     @per_page = safe_per_page_param
+@@ -53,12 +53,165 @@ class Api::V1::AccountsController < Api::V1::BaseController
+     }, status: :internal_server_error
+   end
+ 
++  def credit_card_snapshot
++    unless valid_uuid?(params[:id])
++      render_not_found
++      return
++    end
++
++    @account = current_resource_owner.family.accounts
++                                     .writable_by(current_resource_owner)
++                                     .visible
++                                     .find(params[:id])
++    unless @account.credit_card? && @account.currency == "RUB"
++      render_validation_error("Account is not a RUB credit card")
++      return
++    end
++
++    snapshot = normalized_credit_card_snapshot
++    return if performed?
++
++    unless @account.balance.round(2) == snapshot.fetch(:total_debt).round(2)
++      render_validation_error("Credit card balance does not match total debt")
++      return
++    end
++
++    Account.transaction do
++      @account.credit_card.update!(
++        available_credit: snapshot.fetch(:available_credit),
++        minimum_payment: snapshot.fetch(:minimum_payment)
++      )
++      @account.update!(notes: merged_credit_card_snapshot_notes(snapshot))
++    end
++
++    @account.reload
++    render :show
++  rescue ActiveRecord::RecordNotFound
++    render_not_found
++  rescue ActionController::ParameterMissing => e
++    render_validation_error(e.message)
++  rescue ArgumentError
++    render_validation_error("Credit card snapshot is invalid")
++  rescue ActiveRecord::RecordInvalid => e
++    render_validation_error(e.record.errors.full_messages.join(", "))
++  end
++
+   private
+ 
+     def ensure_read_scope
+       authorize_scope!(:read)
+     end
+ 
++    def ensure_write_scope
++      authorize_scope!(:write)
++    end
++
++    def normalized_credit_card_snapshot
++      raw = params.require(:credit_card_snapshot).permit(
++        :provider,
++        :snapshot_date,
++        :credit_limit,
++        :total_debt,
++        :available_credit,
++        :minimum_payment,
++        :grace_period_payment,
++        :payment_due_date,
++        :current_month_spending,
++        :reward_miles,
++        :source_reference,
++        card_last4s: []
++      )
++      raise ArgumentError unless raw[:provider] == "tbank"
++
++      snapshot_date = Date.iso8601(raw.fetch(:snapshot_date))
++      payment_due_date = Date.iso8601(raw.fetch(:payment_due_date))
++      raise ArgumentError if payment_due_date < snapshot_date
++
++      monetary = {
++        credit_limit: nonnegative_decimal(raw, :credit_limit),
++        total_debt: nonnegative_decimal(raw, :total_debt),
++        available_credit: nonnegative_decimal(raw, :available_credit),
++        minimum_payment: nonnegative_decimal(raw, :minimum_payment),
++        grace_period_payment: nonnegative_decimal(raw, :grace_period_payment),
++        current_month_spending: nonnegative_decimal(raw, :current_month_spending)
++      }
++      credit_limit = monetary.fetch(:credit_limit)
++      raise ArgumentError if monetary.values_at(
++        :total_debt,
++        :available_credit,
++        :minimum_payment,
++        :grace_period_payment
++      ).any? { |value| value > credit_limit }
++
++      card_last4s = Array(raw[:card_last4s]).map(&:to_s).uniq.sort
++      raise ArgumentError unless card_last4s.size.between?(1, 10)
++      raise ArgumentError unless card_last4s.all? { |value| value.match?(/\A\d{4}\z/) }
++
++      reward_miles = Integer(raw.fetch(:reward_miles), 10)
++      raise ArgumentError if reward_miles.negative?
++      source_reference = raw.fetch(:source_reference).to_s
++      raise ArgumentError unless source_reference.match?(/\A[a-f0-9]{16,64}\z/)
++
++      {
++        provider: "tbank",
++        snapshot_date: snapshot_date,
++        payment_due_date: payment_due_date,
++        card_last4s: card_last4s,
++        reward_miles: reward_miles,
++        source_reference: source_reference,
++        **monetary
++      }
++    end
++
++    def nonnegative_decimal(raw, key)
++      value = BigDecimal(raw.fetch(key).to_s)
++      raise ArgumentError if value.negative? || value > BigDecimal("999999999999.99")
++
++      value
++    end
++
++    def merged_credit_card_snapshot_notes(snapshot)
++      start_marker = "[family-connectors:tbank-credit-snapshot]"
++      end_marker = "[/family-connectors:tbank-credit-snapshot]"
++      existing = @account.notes.to_s.gsub(
++        /#{Regexp.escape(start_marker)}.*?#{Regexp.escape(end_marker)}/m,
++        ""
++      ).strip
++      managed = [
++        start_marker,
++        "Snapshot date: #{snapshot.fetch(:snapshot_date).iso8601}",
++        "Credit limit: #{decimal_string(snapshot.fetch(:credit_limit))} RUB",
++        "Total debt: #{decimal_string(snapshot.fetch(:total_debt))} RUB",
++        "Available credit: #{decimal_string(snapshot.fetch(:available_credit))} RUB",
++        "Minimum payment: #{decimal_string(snapshot.fetch(:minimum_payment))} RUB",
++        "Grace-period payment: #{decimal_string(snapshot.fetch(:grace_period_payment))} RUB",
++        "Payment due date: #{snapshot.fetch(:payment_due_date).iso8601}",
++        "Cards: #{snapshot.fetch(:card_last4s).map { |value| "·#{value}" }.join(", ")}",
++        "Current-month spending: #{decimal_string(snapshot.fetch(:current_month_spending))} RUB",
++        "Reward miles: #{snapshot.fetch(:reward_miles)}",
++        "Source reference: #{snapshot.fetch(:source_reference)}",
++        end_marker
++      ].join("\n")
++
++      [ existing.presence, managed ].compact.join("\n\n")
++    end
++
++    def decimal_string(value)
++      value.to_s("F")
++    end
++
++    def render_not_found
++      render json: { error: "not_found", message: "Account not found" }, status: :not_found
++    end
++
++    def render_validation_error(message)
++      render json: {
++        error: "validation_failed",
++        message: message,
++        errors: [ message ]
++      }, status: :unprocessable_entity
++    end
++
+     def accounts_scope
+       scope = current_resource_owner.family.accounts
+                                     .accessible_by(current_resource_owner)
 diff --git a/app/controllers/binance_items_controller.rb b/app/controllers/binance_items_controller.rb
 index 292d77cc..de08bbab 100644
 --- a/app/controllers/binance_items_controller.rb
@@ -4725,6 +4906,23 @@ index 84ceb560..f646f881 100644
    }
  ] %>
  
+diff --git a/app/views/api/v1/accounts/_account.json.jbuilder b/app/views/api/v1/accounts/_account.json.jbuilder
+index b38c3b1a..b43a74dd 100644
+--- a/app/views/api/v1/accounts/_account.json.jbuilder
++++ b/app/views/api/v1/accounts/_account.json.jbuilder
+@@ -16,5 +16,12 @@ json.subtype account.subtype
+ json.status account.status
+ json.institution_name account.institution_name
+ json.institution_domain account.institution_domain
++json.notes account.notes
++if account.credit_card?
++  json.credit_card do
++    json.available_credit account.credit_card.available_credit&.to_s("F")
++    json.minimum_payment account.credit_card.minimum_payment&.to_s("F")
++  end
++end
+ json.created_at account.created_at.iso8601
+ json.updated_at account.updated_at.iso8601
 diff --git a/app/views/binance_items/select_existing_account.html.erb b/app/views/binance_items/select_existing_account.html.erb
 index a980fca9..9ba5cfcb 100644
 --- a/app/views/binance_items/select_existing_account.html.erb
@@ -6124,7 +6322,7 @@ index 2104c799..d03aa452 100644
            только для чтения.
          coinbase: Импортируйте ваши криптоактивы Coinbase и отслеживайте производительность.
 diff --git a/config/routes.rb b/config/routes.rb
-index 3a9bc205..e83bf649 100644
+index 3a9bc205..2c0f8cb6 100644
 --- a/config/routes.rb
 +++ b/config/routes.rb
 @@ -112,6 +112,14 @@ Rails.application.routes.draw do
@@ -6142,6 +6340,17 @@ index 3a9bc205..e83bf649 100644
    resources :kraken_items, only: [ :create, :update, :destroy ] do
      collection do
        get :select_accounts
+@@ -646,7 +654,9 @@ Rails.application.routes.draw do
+       patch "auth/enable_ai", to: "auth#enable_ai"
+ 
+       # Production API endpoints
+-      resources :accounts, only: [ :index, :show ]
++      resources :accounts, only: [ :index, :show ] do
++        patch :credit_card_snapshot, on: :member
++      end
+       resources :balances, only: [ :index, :show ]
+       resources :budgets, only: [ :index, :show ]
+       resources :budget_categories, only: [ :index, :show ]
 diff --git a/config/schedule.yml b/config/schedule.yml
 index 11b61745..f193f8e4 100644
 --- a/config/schedule.yml
@@ -6368,10 +6577,10 @@ index 40f62952..c7a14d5c 100644
    add_foreign_key "plaid_accounts", "plaid_items"
 diff --git a/docs/UPSTREAM.md b/docs/UPSTREAM.md
 new file mode 100644
-index 00000000..5840b71a
+index 00000000..7f74afdb
 --- /dev/null
 +++ b/docs/UPSTREAM.md
-@@ -0,0 +1,423 @@
+@@ -0,0 +1,450 @@
 +# Maintaining the Petrushin AI Sure fork
 +
 +This repository is a native GitHub fork of [`we-promise/sure`](https://github.com/we-promise/sure).
@@ -6643,6 +6852,33 @@ index 00000000..5840b71a
 +  in the dashboard investment summary without reclassifying the accounts or
 +  contaminating market-investment performance metrics.
 +
++### SURE-014 — Reviewed credit-card snapshot API
++
++- Source: direct owner request in Slack DM `1788127184.026449`, 2026-08-31.
++- Status: active downstream integration behavior.
++- Purpose: let the family-connectors integration update only a writable RUB
++  credit card's reviewed T-Bank snapshot metadata after its independently
++  reconciled Sure balance matches the visible total debt. The endpoint accepts
++  exact credit limit, available credit, minimum payment, grace-period payment,
++  due date, visible card suffixes, current-month spending, reward miles, and a
++  non-secret source reference. It updates the native available-credit and
++  minimum-payment fields and replaces one bounded managed notes block while
++  preserving unrelated user notes. Read-only API keys, other families,
++  non-credit accounts, mismatched debt, malformed values, and unsupported
++  currencies fail closed.
++- Main conflict areas: API v1 account routes/controller/presenter, account API
++  request tests and OpenAPI schemas/documentation.
++- Rollback considerations: removing the endpoint does not remove prior account
++  transactions or the last managed notes block; revert those only through a
++  separately reviewed financial operation.
++- Focused regression commands:
++  `bin/rails test test/controllers/api/v1/accounts_controller_test.rb`,
++  `RAILS_ENV=test bundle exec rake rswag:specs:swaggerize`, and
++  `bin/verify-downstream-patch`.
++- Retirement rule: remove only after upstream exposes an equally scoped,
++  owner-authorized credit-card snapshot update that preserves unrelated notes
++  and verifies current debt before metadata mutation.
++
 +If upstream absorbs a patch, record the upstream PR and commit here, compare
 +behavior and tests, remove only the duplicated downstream implementation, and
 +regenerate the patch. Do not silently delete a ledger entry.
@@ -6795,6 +7031,329 @@ index 00000000..5840b71a
 +- If an upstream update includes forward-only data migrations, use the
 +  verified pre-change backup rather than assuming an image-only rollback is
 +  sufficient.
+diff --git a/docs/api/openapi.yaml b/docs/api/openapi.yaml
+index 913c65ed..b134a0a1 100644
+--- a/docs/api/openapi.yaml
++++ b/docs/api/openapi.yaml
+@@ -449,6 +449,19 @@ components:
+         institution_domain:
+           type: string
+           nullable: true
++        notes:
++          type: string
++          nullable: true
++        credit_card:
++          type: object
++          nullable: true
++          properties:
++            available_credit:
++              type: string
++              nullable: true
++            minimum_payment:
++              type: string
++              nullable: true
+         created_at:
+           type: string
+           format: date-time
+@@ -755,14 +768,14 @@ components:
+           type: string
+         display_budgeted_spending_cents:
+           type: integer
+-        rolled_over_amount:
+-          type: string
+-        rolled_over_amount_cents:
+-          type: integer
+         actual_spending:
+           type: string
+         actual_spending_cents:
+           type: integer
++        rolled_over_amount:
++          type: string
++        rolled_over_amount_cents:
++          type: integer
+         available_to_spend:
+           type: string
+         available_to_spend_cents:
+@@ -3376,6 +3389,100 @@ paths:
+             application/json:
+               schema:
+                 "$ref": "#/components/schemas/ErrorResponse"
++  "/api/v1/accounts/{id}/credit_card_snapshot":
++    parameters:
++    - name: id
++      in: path
++      required: true
++      description: Credit-card account ID
++      schema:
++        type: string
++        format: uuid
++    patch:
++      summary: Update a reviewed T-Bank credit-card snapshot
++      tags:
++      - Accounts
++      security:
++      - apiKeyAuth: []
++      parameters: []
++      responses:
++        '200':
++          description: credit-card snapshot updated
++          content:
++            application/json:
++              schema:
++                "$ref": "#/components/schemas/AccountDetail"
++        '401':
++          description: unauthorized
++          content:
++            application/json:
++              schema:
++                "$ref": "#/components/schemas/ErrorResponse"
++        '422':
++          description: snapshot rejected
++          content:
++            application/json:
++              schema:
++                "$ref": "#/components/schemas/ErrorResponse"
++      requestBody:
++        content:
++          application/json:
++            schema:
++              type: object
++              required:
++              - credit_card_snapshot
++              properties:
++                credit_card_snapshot:
++                  type: object
++                  required:
++                  - provider
++                  - snapshot_date
++                  - credit_limit
++                  - total_debt
++                  - available_credit
++                  - minimum_payment
++                  - grace_period_payment
++                  - payment_due_date
++                  - card_last4s
++                  - current_month_spending
++                  - reward_miles
++                  - source_reference
++                  properties:
++                    provider:
++                      type: string
++                      enum:
++                      - tbank
++                    snapshot_date:
++                      type: string
++                      format: date
++                    credit_limit:
++                      type: string
++                    total_debt:
++                      type: string
++                    available_credit:
++                      type: string
++                    minimum_payment:
++                      type: string
++                    grace_period_payment:
++                      type: string
++                    payment_due_date:
++                      type: string
++                      format: date
++                    card_last4s:
++                      type: array
++                      minItems: 1
++                      maxItems: 10
++                      items:
++                        type: string
++                        pattern: "^\\d{4}$"
++                    current_month_spending:
++                      type: string
++                    reward_miles:
++                      type: string
++                    source_reference:
++                      type: string
++                      pattern: "^[a-f0-9]{16,64}$"
++        required: true
+   "/api/v1/auth/signup":
+     post:
+       summary: Sign up a new user
+@@ -4593,85 +4700,6 @@ paths:
+             application/json:
+               schema:
+                 "$ref": "#/components/schemas/ErrorResponse"
+-  "/api/v1/insights":
+-    get:
+-      summary: List proactive insights
+-      tags:
+-      - Insights
+-      security:
+-      - apiKeyAuth: []
+-      responses:
+-        '200':
+-          description: insights listed
+-          content:
+-            application/json:
+-              schema:
+-                "$ref": "#/components/schemas/InsightCollection"
+-        '403':
+-          description: preview features disabled
+-          content:
+-            application/json:
+-              schema:
+-                "$ref": "#/components/schemas/ErrorResponse"
+-  "/api/v1/push_subscriptions":
+-    post:
+-      summary: Register an APNs device token
+-      tags:
+-      - Push Subscriptions
+-      security:
+-      - apiKeyAuth: []
+-      parameters: []
+-      responses:
+-        '201':
+-          description: token registered
+-          content:
+-            application/json:
+-              schema:
+-                "$ref": "#/components/schemas/PushSubscription"
+-        '422':
+-          description: invalid or conflicting subscription
+-          content:
+-            application/json:
+-              schema:
+-                "$ref": "#/components/schemas/ErrorResponse"
+-      requestBody:
+-        content:
+-          application/json:
+-            schema:
+-              type: object
+-              required:
+-              - token
+-              - environment
+-              - platform
+-              properties:
+-                token:
+-                  type: string
+-                environment:
+-                  type: string
+-                  enum:
+-                  - sandbox
+-                  - production
+-                platform:
+-                  type: string
+-                  enum:
+-                  - ios
+-        required: true
+-  "/api/v1/push_subscriptions/{id}":
+-    parameters:
+-    - name: id
+-      in: path
+-      required: true
+-      schema:
+-        type: string
+-    delete:
+-      summary: Unregister an APNs device token
+-      tags:
+-      - Push Subscriptions
+-      security:
+-      - apiKeyAuth: []
+-      responses:
+-        '204':
+-          description: token unregistered
+   "/api/v1/family_exports":
+     get:
+       summary: Lists family exports
+@@ -5901,6 +5929,26 @@ paths:
+                   type: string
+                   description: CSV imports only. Column value that marks an amount
+                     as an inflow when using custom_column strategy
++  "/api/v1/insights":
++    get:
++      summary: List proactive insights
++      tags:
++      - Insights
++      security:
++      - apiKeyAuth: []
++      responses:
++        '200':
++          description: insights listed
++          content:
++            application/json:
++              schema:
++                "$ref": "#/components/schemas/InsightCollection"
++        '403':
++          description: preview features disabled
++          content:
++            application/json:
++              schema:
++                "$ref": "#/components/schemas/ErrorResponse"
+   "/api/v1/merchants":
+     get:
+       summary: List merchants
+@@ -6012,6 +6060,65 @@ paths:
+             application/json:
+               schema:
+                 "$ref": "#/components/schemas/ErrorResponse"
++  "/api/v1/push_subscriptions":
++    post:
++      summary: Register an APNs device token
++      tags:
++      - Push Subscriptions
++      security:
++      - apiKeyAuth: []
++      parameters: []
++      responses:
++        '201':
++          description: token registered
++          content:
++            application/json:
++              schema:
++                "$ref": "#/components/schemas/PushSubscription"
++        '422':
++          description: invalid or conflicting subscription
++          content:
++            application/json:
++              schema:
++                "$ref": "#/components/schemas/ErrorResponse"
++      requestBody:
++        content:
++          application/json:
++            schema:
++              type: object
++              required:
++              - token
++              - environment
++              - platform
++              properties:
++                token:
++                  type: string
++                environment:
++                  type: string
++                  enum:
++                  - sandbox
++                  - production
++                platform:
++                  type: string
++                  enum:
++                  - ios
++        required: true
++  "/api/v1/push_subscriptions/{id}":
++    parameters:
++    - name: id
++      in: path
++      required: true
++      schema:
++        type: string
++    delete:
++      summary: Unregister an APNs device token
++      tags:
++      - Push Subscriptions
++      security:
++      - apiKeyAuth: []
++      responses:
++        '204':
++          description: token unregistered
+   "/api/v1/recurring_transactions":
+     get:
+       summary: List recurring transactions
 diff --git a/docs/hosting/binance.md b/docs/hosting/binance.md
 new file mode 100644
 index 00000000..d0619575
@@ -7187,6 +7746,123 @@ index 333bcdf4..531bccd1 100644
  **Transfers appear with a value of 0 and are excluded from totals.** No price was
  available for that date yet. Once market data covers the range, the next sync
  upgrades those entries to trades automatically — they keep their identity, so
+diff --git a/spec/requests/api/v1/accounts_spec.rb b/spec/requests/api/v1/accounts_spec.rb
+index 91686840..3d5c685e 100644
+--- a/spec/requests/api/v1/accounts_spec.rb
++++ b/spec/requests/api/v1/accounts_spec.rb
+@@ -151,4 +151,92 @@ RSpec.describe 'API V1 Accounts', type: :request do
+       end
+     end
+   end
++
++  path '/api/v1/accounts/{id}/credit_card_snapshot' do
++    parameter name: :id, in: :path, required: true, description: 'Credit-card account ID',
++              schema: { type: :string, format: :uuid }
++
++    patch 'Update a reviewed T-Bank credit-card snapshot' do
++      tags 'Accounts'
++      security [ { apiKeyAuth: [] } ]
++      consumes 'application/json'
++      produces 'application/json'
++      parameter name: :credit_card_snapshot, in: :body, required: true, schema: {
++        type: :object,
++        required: %w[credit_card_snapshot],
++        properties: {
++          credit_card_snapshot: {
++            type: :object,
++            required: %w[provider snapshot_date credit_limit total_debt available_credit minimum_payment grace_period_payment payment_due_date card_last4s current_month_spending reward_miles source_reference],
++            properties: {
++              provider: { type: :string, enum: %w[tbank] },
++              snapshot_date: { type: :string, format: :date },
++              credit_limit: { type: :string },
++              total_debt: { type: :string },
++              available_credit: { type: :string },
++              minimum_payment: { type: :string },
++              grace_period_payment: { type: :string },
++              payment_due_date: { type: :string, format: :date },
++              card_last4s: {
++                type: :array,
++                minItems: 1,
++                maxItems: 10,
++                items: { type: :string, pattern: '^\\d{4}$' }
++              },
++              current_month_spending: { type: :string },
++              reward_miles: { type: :string },
++              source_reference: { type: :string, pattern: '^[a-f0-9]{16,64}$' }
++            }
++          }
++        }
++      }
++
++      let(:id) { tbank_credit_card.id }
++      let(:tbank_credit_card) do
++        Account.create!(
++          family: family,
++          owner: user,
++          name: 'T-Bank Credit Card',
++          balance: 120_569,
++          currency: 'RUB',
++          accountable: CreditCard.create!
++        )
++      end
++      let(:credit_card_snapshot) do
++        {
++          credit_card_snapshot: {
++            provider: 'tbank',
++            snapshot_date: '2026-08-31',
++            credit_limit: '640000',
++            total_debt: '120569',
++            available_credit: '519667.35',
++            minimum_payment: '7000',
++            grace_period_payment: '120332.65',
++            payment_due_date: '2026-09-22',
++            card_last4s: %w[3154 9146],
++            current_month_spending: '24265',
++            reward_miles: '9780',
++            source_reference: 'aaaaaaaaaaaaaaaa'
++          }
++        }
++      end
++
++      response '200', 'credit-card snapshot updated' do
++        schema '$ref' => '#/components/schemas/AccountDetail'
++        run_test!
++      end
++
++      response '401', 'unauthorized' do
++        schema '$ref' => '#/components/schemas/ErrorResponse'
++        let(:'X-Api-Key') { nil }
++        run_test!
++      end
++
++      response '422', 'snapshot rejected' do
++        schema '$ref' => '#/components/schemas/ErrorResponse'
++        let(:id) { checking_account.id }
++        run_test!
++      end
++    end
++  end
+ end
+diff --git a/spec/swagger_helper.rb b/spec/swagger_helper.rb
+index f1d5e7ed..2622b842 100644
+--- a/spec/swagger_helper.rb
++++ b/spec/swagger_helper.rb
+@@ -290,6 +290,15 @@ RSpec.configure do |config|
+               status: { type: :string, enum: %w[active draft disabled pending_deletion] },
+               institution_name: { type: :string, nullable: true },
+               institution_domain: { type: :string, nullable: true },
++              notes: { type: :string, nullable: true },
++              credit_card: {
++                type: :object,
++                nullable: true,
++                properties: {
++                  available_credit: { type: :string, nullable: true },
++                  minimum_payment: { type: :string, nullable: true }
++                }
++              },
+               created_at: { type: :string, format: :'date-time' },
+               updated_at: { type: :string, format: :'date-time' }
+             }
 diff --git a/test/controllers/accounts_controller_test.rb b/test/controllers/accounts_controller_test.rb
 index 66b3c0f0..c1fe65b5 100644
 --- a/test/controllers/accounts_controller_test.rb
@@ -7277,6 +7953,154 @@ index 5af9070d..f1b5e0a9 100644
  
      with_ai_environment(
        "OPENAI_ACCESS_TOKEN" => "sk-secret-openai",
+diff --git a/test/controllers/api/v1/accounts_controller_test.rb b/test/controllers/api/v1/accounts_controller_test.rb
+index 65e1715c..0b531264 100644
+--- a/test/controllers/api/v1/accounts_controller_test.rb
++++ b/test/controllers/api/v1/accounts_controller_test.rb
+@@ -16,6 +16,13 @@ class Api::V1::AccountsControllerTest < ActionDispatch::IntegrationTest
+       source: "web",
+       display_key: "test_read_#{SecureRandom.hex(8)}"
+     )
++    @write_key = ApiKey.create!(
++      user: @user,
++      name: "Test Read Write Key",
++      scopes: [ "read_write" ],
++      source: "web",
++      display_key: "test_read_write_#{SecureRandom.hex(8)}"
++    )
+ 
+     @other_family_user.api_keys.active.destroy_all
+     @other_family_api_key = ApiKey.create!(
+@@ -25,6 +32,13 @@ class Api::V1::AccountsControllerTest < ActionDispatch::IntegrationTest
+       source: "web",
+       display_key: "other_family_read_#{SecureRandom.hex(8)}"
+     )
++    @other_family_write_key = ApiKey.create!(
++      user: @other_family_user,
++      name: "Other Family Read Write Key",
++      scopes: [ "read_write" ],
++      source: "web",
++      display_key: "other_family_read_write_#{SecureRandom.hex(8)}"
++    )
+   end
+ 
+   test "should require authentication" do
+@@ -227,6 +241,93 @@ class Api::V1::AccountsControllerTest < ActionDispatch::IntegrationTest
+     end
+   end
+ 
++  test "should update a reviewed T-Bank credit card snapshot" do
++    account = accounts(:credit_card)
++    account.update!(currency: "RUB", balance: 120_569, notes: "Keep this note")
++
++    patch "/api/v1/accounts/#{account.id}/credit_card_snapshot",
++          params: { credit_card_snapshot: tbank_credit_card_snapshot },
++          headers: api_headers(@write_key)
++
++    assert_response :success
++    response_body = JSON.parse(response.body)
++    assert_equal "519667.35", response_body.dig("credit_card", "available_credit")
++    assert_equal "7000.0", response_body.dig("credit_card", "minimum_payment")
++    assert_includes response_body["notes"], "Keep this note"
++    assert_includes response_body["notes"], "Credit limit: 640000.0 RUB"
++    assert_includes response_body["notes"], "Total debt: 120569.0 RUB"
++    assert_includes response_body["notes"], "Payment due date: 2026-09-22"
++    assert_includes response_body["notes"], "Cards: ·3154, ·9146"
++
++    account.reload
++    assert_equal BigDecimal("519667.35"), account.credit_card.available_credit
++    assert_equal BigDecimal("7000"), account.credit_card.minimum_payment
++    assert_equal 1, account.notes.scan("[family-connectors:tbank-credit-snapshot]").size
++
++    patch "/api/v1/accounts/#{account.id}/credit_card_snapshot",
++          params: { credit_card_snapshot: tbank_credit_card_snapshot },
++          headers: api_headers(@write_key)
++
++    assert_response :success
++    assert_equal 1, account.reload.notes.scan("[family-connectors:tbank-credit-snapshot]").size
++  end
++
++  test "should require write scope for a credit card snapshot" do
++    account = accounts(:credit_card)
++    account.update!(currency: "RUB", balance: 120_569)
++
++    patch "/api/v1/accounts/#{account.id}/credit_card_snapshot",
++          params: { credit_card_snapshot: tbank_credit_card_snapshot },
++          headers: api_headers(@api_key)
++
++    assert_response :forbidden
++  end
++
++  test "should require authentication for a credit card snapshot" do
++    account = accounts(:credit_card)
++
++    patch "/api/v1/accounts/#{account.id}/credit_card_snapshot",
++          params: { credit_card_snapshot: tbank_credit_card_snapshot }
++
++    assert_response :unauthorized
++  end
++
++  test "should not update another family's credit card" do
++    account = accounts(:credit_card)
++    account.update!(currency: "RUB", balance: 120_569)
++    previous_available_credit = account.credit_card.available_credit
++
++    patch "/api/v1/accounts/#{account.id}/credit_card_snapshot",
++          params: { credit_card_snapshot: tbank_credit_card_snapshot },
++          headers: api_headers(@other_family_write_key)
++
++    assert_response :not_found
++    assert_equal previous_available_credit, account.reload.credit_card.available_credit
++  end
++
++  test "should reject a snapshot for a non-credit account" do
++    account = accounts(:depository)
++
++    patch "/api/v1/accounts/#{account.id}/credit_card_snapshot",
++          params: { credit_card_snapshot: tbank_credit_card_snapshot },
++          headers: api_headers(@write_key)
++
++    assert_response :unprocessable_entity
++    assert_equal "validation_failed", JSON.parse(response.body)["error"]
++  end
++
++  test "should reject a credit snapshot whose debt does not match the account" do
++    account = accounts(:credit_card)
++    account.update!(currency: "RUB", balance: 1)
++
++    patch "/api/v1/accounts/#{account.id}/credit_card_snapshot",
++          params: { credit_card_snapshot: tbank_credit_card_snapshot },
++          headers: api_headers(@write_key)
++
++    assert_response :unprocessable_entity
++    assert_equal "Credit card balance does not match total debt", JSON.parse(response.body)["message"]
++  end
++
+   test "should not return other family's accounts" do
+     get "/api/v1/accounts", params: {}, headers: api_headers(@other_family_api_key)
+ 
+@@ -316,4 +417,21 @@ class Api::V1::AccountsControllerTest < ActionDispatch::IntegrationTest
+     def assert_nullable_equal(expected, actual)
+       expected.nil? ? assert_nil(actual) : assert_equal(expected, actual)
+     end
++
++    def tbank_credit_card_snapshot
++      {
++        provider: "tbank",
++        snapshot_date: "2026-08-31",
++        credit_limit: "640000",
++        total_debt: "120569",
++        available_credit: "519667.35",
++        minimum_payment: "7000",
++        grace_period_payment: "120332.65",
++        payment_due_date: "2026-09-22",
++        card_last4s: %w[9146 3154],
++        current_month_spending: "24265",
++        reward_miles: "9780",
++        source_reference: "a" * 16
++      }
++    end
+ end
 diff --git a/test/controllers/binance_items_controller_test.rb b/test/controllers/binance_items_controller_test.rb
 index 45170542..febb2149 100644
 --- a/test/controllers/binance_items_controller_test.rb

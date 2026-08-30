@@ -269,6 +269,33 @@ image publish. A stale or non-applicable patch is a hard failure.
   in the dashboard investment summary without reclassifying the accounts or
   contaminating market-investment performance metrics.
 
+### SURE-014 — Reviewed credit-card snapshot API
+
+- Source: direct owner request in Slack DM `1788127184.026449`, 2026-08-31.
+- Status: active downstream integration behavior.
+- Purpose: let the family-connectors integration update only a writable RUB
+  credit card's reviewed T-Bank snapshot metadata after its independently
+  reconciled Sure balance matches the visible total debt. The endpoint accepts
+  exact credit limit, available credit, minimum payment, grace-period payment,
+  due date, visible card suffixes, current-month spending, reward miles, and a
+  non-secret source reference. It updates the native available-credit and
+  minimum-payment fields and replaces one bounded managed notes block while
+  preserving unrelated user notes. Read-only API keys, other families,
+  non-credit accounts, mismatched debt, malformed values, and unsupported
+  currencies fail closed.
+- Main conflict areas: API v1 account routes/controller/presenter, account API
+  request tests and OpenAPI schemas/documentation.
+- Rollback considerations: removing the endpoint does not remove prior account
+  transactions or the last managed notes block; revert those only through a
+  separately reviewed financial operation.
+- Focused regression commands:
+  `bin/rails test test/controllers/api/v1/accounts_controller_test.rb`,
+  `RAILS_ENV=test bundle exec rake rswag:specs:swaggerize`, and
+  `bin/verify-downstream-patch`.
+- Retirement rule: remove only after upstream exposes an equally scoped,
+  owner-authorized credit-card snapshot update that preserves unrelated notes
+  and verifies current debt before metadata mutation.
+
 If upstream absorbs a patch, record the upstream PR and commit here, compare
 behavior and tests, remove only the duplicated downstream implementation, and
 regenerate the patch. Do not silently delete a ledger entry.

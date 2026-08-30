@@ -449,6 +449,19 @@ components:
         institution_domain:
           type: string
           nullable: true
+        notes:
+          type: string
+          nullable: true
+        credit_card:
+          type: object
+          nullable: true
+          properties:
+            available_credit:
+              type: string
+              nullable: true
+            minimum_payment:
+              type: string
+              nullable: true
         created_at:
           type: string
           format: date-time
@@ -755,13 +768,13 @@ components:
           type: string
         display_budgeted_spending_cents:
           type: integer
-        rolled_over_amount:
-          type: string
-        rolled_over_amount_cents:
-          type: integer
         actual_spending:
           type: string
         actual_spending_cents:
+          type: integer
+        rolled_over_amount:
+          type: string
+        rolled_over_amount_cents:
           type: integer
         available_to_spend:
           type: string
@@ -3376,6 +3389,100 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
+  "/api/v1/accounts/{id}/credit_card_snapshot":
+    parameters:
+    - name: id
+      in: path
+      required: true
+      description: Credit-card account ID
+      schema:
+        type: string
+        format: uuid
+    patch:
+      summary: Update a reviewed T-Bank credit-card snapshot
+      tags:
+      - Accounts
+      security:
+      - apiKeyAuth: []
+      parameters: []
+      responses:
+        '200':
+          description: credit-card snapshot updated
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/AccountDetail"
+        '401':
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '422':
+          description: snapshot rejected
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - credit_card_snapshot
+              properties:
+                credit_card_snapshot:
+                  type: object
+                  required:
+                  - provider
+                  - snapshot_date
+                  - credit_limit
+                  - total_debt
+                  - available_credit
+                  - minimum_payment
+                  - grace_period_payment
+                  - payment_due_date
+                  - card_last4s
+                  - current_month_spending
+                  - reward_miles
+                  - source_reference
+                  properties:
+                    provider:
+                      type: string
+                      enum:
+                      - tbank
+                    snapshot_date:
+                      type: string
+                      format: date
+                    credit_limit:
+                      type: string
+                    total_debt:
+                      type: string
+                    available_credit:
+                      type: string
+                    minimum_payment:
+                      type: string
+                    grace_period_payment:
+                      type: string
+                    payment_due_date:
+                      type: string
+                      format: date
+                    card_last4s:
+                      type: array
+                      minItems: 1
+                      maxItems: 10
+                      items:
+                        type: string
+                        pattern: "^\\d{4}$"
+                    current_month_spending:
+                      type: string
+                    reward_miles:
+                      type: string
+                    source_reference:
+                      type: string
+                      pattern: "^[a-f0-9]{16,64}$"
+        required: true
   "/api/v1/auth/signup":
     post:
       summary: Sign up a new user
@@ -4593,85 +4700,6 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
-  "/api/v1/insights":
-    get:
-      summary: List proactive insights
-      tags:
-      - Insights
-      security:
-      - apiKeyAuth: []
-      responses:
-        '200':
-          description: insights listed
-          content:
-            application/json:
-              schema:
-                "$ref": "#/components/schemas/InsightCollection"
-        '403':
-          description: preview features disabled
-          content:
-            application/json:
-              schema:
-                "$ref": "#/components/schemas/ErrorResponse"
-  "/api/v1/push_subscriptions":
-    post:
-      summary: Register an APNs device token
-      tags:
-      - Push Subscriptions
-      security:
-      - apiKeyAuth: []
-      parameters: []
-      responses:
-        '201':
-          description: token registered
-          content:
-            application/json:
-              schema:
-                "$ref": "#/components/schemas/PushSubscription"
-        '422':
-          description: invalid or conflicting subscription
-          content:
-            application/json:
-              schema:
-                "$ref": "#/components/schemas/ErrorResponse"
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-              - token
-              - environment
-              - platform
-              properties:
-                token:
-                  type: string
-                environment:
-                  type: string
-                  enum:
-                  - sandbox
-                  - production
-                platform:
-                  type: string
-                  enum:
-                  - ios
-        required: true
-  "/api/v1/push_subscriptions/{id}":
-    parameters:
-    - name: id
-      in: path
-      required: true
-      schema:
-        type: string
-    delete:
-      summary: Unregister an APNs device token
-      tags:
-      - Push Subscriptions
-      security:
-      - apiKeyAuth: []
-      responses:
-        '204':
-          description: token unregistered
   "/api/v1/family_exports":
     get:
       summary: Lists family exports
@@ -5901,6 +5929,26 @@ paths:
                   type: string
                   description: CSV imports only. Column value that marks an amount
                     as an inflow when using custom_column strategy
+  "/api/v1/insights":
+    get:
+      summary: List proactive insights
+      tags:
+      - Insights
+      security:
+      - apiKeyAuth: []
+      responses:
+        '200':
+          description: insights listed
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/InsightCollection"
+        '403':
+          description: preview features disabled
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
   "/api/v1/merchants":
     get:
       summary: List merchants
@@ -6012,6 +6060,65 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
+  "/api/v1/push_subscriptions":
+    post:
+      summary: Register an APNs device token
+      tags:
+      - Push Subscriptions
+      security:
+      - apiKeyAuth: []
+      parameters: []
+      responses:
+        '201':
+          description: token registered
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PushSubscription"
+        '422':
+          description: invalid or conflicting subscription
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - token
+              - environment
+              - platform
+              properties:
+                token:
+                  type: string
+                environment:
+                  type: string
+                  enum:
+                  - sandbox
+                  - production
+                platform:
+                  type: string
+                  enum:
+                  - ios
+        required: true
+  "/api/v1/push_subscriptions/{id}":
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    delete:
+      summary: Unregister an APNs device token
+      tags:
+      - Push Subscriptions
+      security:
+      - apiKeyAuth: []
+      responses:
+        '204':
+          description: token unregistered
   "/api/v1/recurring_transactions":
     get:
       summary: List recurring transactions
